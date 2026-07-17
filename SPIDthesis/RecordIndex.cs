@@ -13,6 +13,12 @@ internal sealed class RecordIndex
     public Dictionary<FormKey, IKeywordGetter> Keywords { get; } = new();
     public Dictionary<FormKey, ISpellGetter> Spells { get; } = new();
     public Dictionary<FormKey, IPerkGetter> Perks { get; } = new();
+    public Dictionary<FormKey, IShoutGetter> Shouts { get; } = new();
+    public Dictionary<FormKey, IPackageGetter> Packages { get; } = new();
+    public Dictionary<FormKey, IFactionGetter> Factions { get; } = new();
+    public Dictionary<FormKey, IArmorGetter> Armors { get; } = new();
+    public Dictionary<FormKey, IItemGetter> Items { get; } = new();
+    public Dictionary<FormKey, IOutfitGetter> Outfits { get; } = new();
     public Dictionary<FormKey, IRaceGetter> Races { get; } = new();
     public Dictionary<FormKey, HashSet<FormKey>> FormListItems { get; } = new();
 
@@ -42,6 +48,30 @@ internal sealed class RecordIndex
             index.Perks[record.FormKey] = record;
         }
 
+        foreach (var record in state.LoadOrder.PriorityOrder.Shout().WinningOverrides())
+        {
+            index.Add(record.FormKey, record.EditorID, IndexedFormKind.Shout);
+            index.Shouts[record.FormKey] = record;
+        }
+
+        foreach (var record in state.LoadOrder.PriorityOrder.Package().WinningOverrides())
+        {
+            index.Add(record.FormKey, record.EditorID, IndexedFormKind.Package);
+            index.Packages[record.FormKey] = record;
+        }
+
+        foreach (var record in state.LoadOrder.PriorityOrder.Armor().WinningOverrides())
+        {
+            index.Add(record.FormKey, record.EditorID, IndexedFormKind.Armor);
+            index.Armors[record.FormKey] = record;
+        }
+
+        foreach (var record in state.LoadOrder.PriorityOrder.IItem().WinningOverrides())
+        {
+            index.Add(record.FormKey, record.EditorID, IndexedFormKind.Item);
+            index.Items[record.FormKey] = record;
+        }
+
         foreach (var record in state.LoadOrder.PriorityOrder.Race().WinningOverrides())
         {
             index.Add(record.FormKey, record.EditorID, IndexedFormKind.Race);
@@ -56,6 +86,7 @@ internal sealed class RecordIndex
         foreach (var record in state.LoadOrder.PriorityOrder.Faction().WinningOverrides())
         {
             index.Add(record.FormKey, record.EditorID, IndexedFormKind.Faction);
+            index.Factions[record.FormKey] = record;
         }
 
         foreach (var record in state.LoadOrder.PriorityOrder.Class().WinningOverrides())
@@ -76,11 +107,7 @@ internal sealed class RecordIndex
         foreach (var record in state.LoadOrder.PriorityOrder.Outfit().WinningOverrides())
         {
             index.Add(record.FormKey, record.EditorID, IndexedFormKind.Outfit);
-        }
-
-        foreach (var record in state.LoadOrder.PriorityOrder.Armor().WinningOverrides())
-        {
-            index.Add(record.FormKey, record.EditorID, IndexedFormKind.Armor);
+            index.Outfits[record.FormKey] = record;
         }
 
         foreach (var record in state.LoadOrder.PriorityOrder.FormList().WinningOverrides())
@@ -179,6 +206,11 @@ internal sealed class RecordIndex
         return _byFormKey.TryGetValue(formKey, out var value) ? value.EditorId : null;
     }
 
+    public IndexedFormKind GetKind(FormKey formKey)
+    {
+        return _byFormKey.TryGetValue(formKey, out var value) ? value.Kind : IndexedFormKind.Unknown;
+    }
+
     private bool IsCorrectDistributedType(DistributionKind kind, FormKey key)
     {
         return kind switch
@@ -186,6 +218,13 @@ internal sealed class RecordIndex
             DistributionKind.Keyword => Keywords.ContainsKey(key),
             DistributionKind.Spell => Spells.ContainsKey(key),
             DistributionKind.Perk => Perks.ContainsKey(key),
+            DistributionKind.Shout => Shouts.ContainsKey(key),
+            DistributionKind.Package => Packages.ContainsKey(key) || FormListItems.ContainsKey(key),
+            DistributionKind.Item => Items.ContainsKey(key),
+            DistributionKind.Outfit => Outfits.ContainsKey(key),
+            DistributionKind.SleepOutfit => Outfits.ContainsKey(key),
+            DistributionKind.Faction => Factions.ContainsKey(key),
+            DistributionKind.Skin => Armors.ContainsKey(key),
             _ => false
         };
     }

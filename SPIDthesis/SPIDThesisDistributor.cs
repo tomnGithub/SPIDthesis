@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Security.Cryptography;
 using Mutagen.Bethesda;
 using Mutagen.Bethesda.Plugins;
 using Mutagen.Bethesda.Skyrim;
@@ -11,14 +13,25 @@ internal sealed class SPIDThesisDistributor
 
     private readonly IPatcherState<ISkyrimMod, ISkyrimModGetter> _state;
     private readonly Settings _settings;
+    private readonly HashSet<string> _includedIniFiles;
     private readonly HashSet<string> _ignoredIniFiles;
-    private readonly HashSet<string> _ignoredNpcPlugins;
+    private readonly string _convertedFolderPath;
+    private readonly int _runSeed;
     private readonly HashSet<string> _warningOnce = new(StringComparer.OrdinalIgnoreCase);
 
     private int _keywordsCreated;
     private int _keywordsAdded;
     private int _spellsAdded;
     private int _perksAdded;
+    private int _shoutsAdded;
+    private int _packagesAdded;
+    private int _packageListsAssigned;
+    private int _factionsAdded;
+    private int _sleepOutfitsAssigned;
+    private int _skinsAssigned;
+    private int _itemDistributionsApplied;
+    private long _itemQuantityAdded;
+    private int _outfitsAssigned;
     private int _npcsChanged;
     private int _rulesSkipped;
 
@@ -28,121 +41,198 @@ internal sealed class SPIDThesisDistributor
     {
         _state = state;
         _settings = settings;
-        _ignoredIniFiles = settings.IgnoredIniFiles.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        _ignoredNpcPlugins = settings.IgnoredNpcPlugins.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        _includedIniFiles = NormalizeIniFileNames(settings.IncludedIniFiles);
+        _ignoredIniFiles = NormalizeIniFileNames(settings.IgnoredIniFiles);
+        _convertedFolderPath = Path.Combine(state.DataFolderPath.ToString(), "SPIDThesisConverted");
+        _runSeed = BitConverter.ToInt32(RandomNumberGenerator.GetBytes(sizeof(int)));
     }
 
     public void Run()
     {
-        var iniFiles = DiscoverIniFiles().ToArray();
-        Console.WriteLine($"SPIDThesis: found {iniFiles.Length} *_DISTR.ini file(s) in {_state.DataFolderPath}.");
-        if (iniFiles.Length == 0) return;
+        SpidLog.Header("INI");
 
-        var parsedRules = SpidIniParser.ParseFiles(iniFiles, Warn);
-        Console.WriteLine($"SPIDThesis: parsed {parsedRules.Count} Keyword/Spell/Perk rule(s).");
+        var iniFiles = DiscoverIniFiles().ToArray();
+        if (iniFiles.Length == 0)
+        {
+            SpidLog.Warn("No .ini files with _DISTR suffix were found within the Data folder, aborting...");
+            return;
+        }
+
+        SpidLog.Info($"{iniFiles.Length} matching inis found");
+        foreach (var iniFile in iniFiles)
+        {
+            SpidLog.Info($"\tINI : {ToSpidDataPath(iniFile)}");
+        }
+
+        var parseResult = SpidIniParser.ParseFiles(iniFiles, Warn);
+        var parsedRules = parseResult.Rules;
+
+        SpidLog.Header("LOOKUP");
+        var lookupTimer = Stopwatch.StartNew();
 
         var index = RecordIndex.Build(_state);
         var resolvedRules = ResolveRules(parsedRules, index).ToArray();
         resolvedRules = KeywordRuleOrdering.OrderLikeSpid(resolvedRules, index, Warn).ToArray();
-        Console.WriteLine($"SPIDThesis: resolved {resolvedRules.Length} rule(s); {_rulesSkipped} rule(s) skipped.");
 
-        if (_settings.VerboseLogging || resolvedRules.Length <= 25)
+        lookupTimer.Stop();
+        if (resolvedRules.Length > 0)
         {
-            Console.WriteLine("SPIDThesis: resolved form filters:");
-            foreach (var rule in resolvedRules)
+            SpidLog.Header("PROCESSING");
+            LogRegisteredRules(parsedRules, resolvedRules);
+            long lookupMicroseconds = lookupTimer.ElapsedTicks * 1_000_000L / Stopwatch.Frequency;
+            SpidLog.Info($"Lookup took {lookupMicroseconds}μs / {lookupTimer.ElapsedMilliseconds}ms");
+
+            foreach (var npc in _state.LoadOrder.PriorityOrder.Npc().WinningOverrides())
             {
-                LogResolvedFilters(rule.Source, rule.FormFilters, index);
+                if (npc.FormKey == PlayerFormKey) continue;
+
+                var evaluation = NpcEvaluationState.Create(index, npc);
+                bool changed = false;
+                bool outfitRuleSettled = false;
+                bool sleepOutfitRuleSettled = false;
+                bool skinRuleSettled = false;
+
+                foreach (var rule in resolvedRules)
+                {
+                    if (!KindEnabled(rule.Source.Kind)) continue;
+                    if (rule.Source.Kind == DistributionKind.Outfit && outfitRuleSettled) continue;
+                    if (rule.Source.Kind == DistributionKind.SleepOutfit && sleepOutfitRuleSettled) continue;
+                    if (rule.Source.Kind == DistributionKind.Skin && skinRuleSettled) continue;
+                    if (!RuleMatcher.Matches(rule, evaluation, _runSeed)) continue;
+
+                    // Outfit, sleep-outfit, and skin distribution are first-match per NPC.
+                    if (rule.Source.Kind == DistributionKind.Outfit) outfitRuleSettled = true;
+                    if (rule.Source.Kind == DistributionKind.SleepOutfit) sleepOutfitRuleSettled = true;
+                    if (rule.Source.Kind == DistributionKind.Skin) skinRuleSettled = true;
+
+                    if (AlreadyHas(rule, evaluation)) continue;
+                    if (Apply(rule, evaluation)) changed = true;
+                }
+
+                if (changed) _npcsChanged++;
             }
         }
 
-        var ruleStats = resolvedRules.ToDictionary(rule => rule, _ => new RuleRunStats());
-        int npcRecordsScanned = 0;
+        MoveProcessedIniFiles(parseResult.ProcessedFiles);
+    }
 
-        foreach (var npc in _state.LoadOrder.PriorityOrder.Npc().WinningOverrides())
+    private string ToSpidDataPath(string path)
+    {
+        string dataFolder = Path.GetFullPath(_state.DataFolderPath.ToString());
+        string relative = Path.GetRelativePath(dataFolder, Path.GetFullPath(path))
+            .Replace('/', '\\');
+        return $"Data\\{relative}";
+    }
+
+    private void LogRegisteredRules(
+        IReadOnlyCollection<SpidRule> parsedRules,
+        IReadOnlyCollection<ResolvedRule> resolvedRules)
+    {
+        foreach (var kind in Enum.GetValues<DistributionKind>())
         {
-            if (!_settings.PatchPlayer && npc.FormKey == PlayerFormKey) continue;
-            if (_ignoredNpcPlugins.Contains(npc.FormKey.ModKey.FileName.String)) continue;
+            int all = parsedRules.Count(rule => rule.Kind == kind && KindEnabled(kind));
+            if (all == 0) continue;
 
-            npcRecordsScanned++;
-            var evaluation = NpcEvaluationState.Create(
-                _state,
-                index,
-                npc,
-                _settings.EnableTemplateHandling);
-            bool changed = false;
-
-            foreach (var rule in resolvedRules)
-            {
-                if (!KindEnabled(rule.Source.Kind)) continue;
-                if (!RuleMatcher.Matches(rule, evaluation, _settings)) continue;
-
-                var stats = ruleStats[rule];
-                stats.Matched++;
-
-                if (AlreadyHas(rule, evaluation))
-                {
-                    stats.AlreadyHad++;
-                    continue;
-                }
-
-                if (Apply(rule, evaluation))
-                {
-                    stats.Applied++;
-                    changed = true;
-                    if (_settings.VerboseLogging)
-                    {
-                        Console.WriteLine($"  {npc.EditorID ?? npc.FormKey.ToString()}: +{rule.Source.Kind} {rule.DistributedForm} ({Path.GetFileName(rule.Source.SourcePath)}:{rule.Source.LineNumber})");
-                    }
-                }
-            }
-
-            if (changed) _npcsChanged++;
+            int registered = resolvedRules.Count(rule => rule.Source.Kind == kind);
+            SpidLog.Info($"Registered {registered}/{all} {GetSpidRecordName(kind)}s");
         }
+    }
 
-        string matchingMode = _settings.EnableTemplateHandling
-            ? "template-aware mode"
-            : "direct-record mode (template handling disabled)";
-        Console.WriteLine($"SPIDThesis: scanned {npcRecordsScanned} winning NPC record(s) in {matchingMode}.");
-        int rulesWithoutMatches = 0;
-        bool printRuleDetails = _settings.VerboseLogging || resolvedRules.Length <= 25;
-
-        foreach (var rule in resolvedRules)
+    private static string GetSpidRecordName(DistributionKind kind)
+    {
+        return kind switch
         {
-            var stats = ruleStats[rule];
-            if (stats.Matched == 0) rulesWithoutMatches++;
-            if (!printRuleDetails) continue;
-
-            string source = $"{Path.GetFileName(rule.Source.SourcePath)}:{rule.Source.LineNumber}";
-            Console.WriteLine(
-                $"  Rule {source} {rule.Source.Kind} '{rule.Source.RawDistributedForm}': " +
-                $"matched {stats.Matched}, applied {stats.Applied}, already present {stats.AlreadyHad}.");
-        }
-
-        if (!printRuleDetails && rulesWithoutMatches > 0)
-        {
-            Console.WriteLine(
-                $"SPIDThesis: {rulesWithoutMatches} rule(s) matched no NPCs. " +
-                "Enable verbose logging for per-rule counts.");
-        }
-
-        Console.WriteLine("SPIDThesis complete.");
-        Console.WriteLine($"  NPCs changed: {_npcsChanged}");
-        Console.WriteLine($"  Keyword records created: {_keywordsCreated}");
-        Console.WriteLine($"  Keywords added: {_keywordsAdded}");
-        Console.WriteLine($"  Spells added: {_spellsAdded}");
-        Console.WriteLine($"  Perks added: {_perksAdded}");
+            DistributionKind.Keyword => "Keyword",
+            DistributionKind.Spell => "Spell",
+            DistributionKind.Perk => "Perk",
+            DistributionKind.Shout => "Shout",
+            DistributionKind.Package => "Package",
+            DistributionKind.Item => "Item",
+            DistributionKind.Outfit => "Outfit",
+            DistributionKind.SleepOutfit => "SleepOutfit",
+            DistributionKind.Faction => "Faction",
+            DistributionKind.Skin => "Skin",
+            _ => kind.ToString()
+        };
     }
 
     private IEnumerable<string> DiscoverIniFiles()
     {
-        var option = _settings.SearchSubdirectories
-            ? SearchOption.AllDirectories
-            : SearchOption.TopDirectoryOnly;
+        string dataFolder = _state.DataFolderPath.ToString();
+        var candidates = new List<string>();
+        candidates.AddRange(EnumerateDistrIniFiles(dataFolder));
 
-        return Directory.EnumerateFiles(_state.DataFolderPath.ToString(), "*.ini", option)
-            .Where(path => Path.GetFileName(path).EndsWith("_DISTR.ini", StringComparison.OrdinalIgnoreCase))
+        if (_settings.LookInConvertedFolder && Directory.Exists(_convertedFolderPath))
+        {
+            candidates.AddRange(EnumerateDistrIniFiles(_convertedFolderPath));
+        }
+
+        // The Data-root copy wins when a file with the same name also exists in the
+        // converted folder. This prevents additive rules such as Item from running twice.
+        return candidates
+            .Where(path => !_settings.OnlyReadListedIniFiles || _includedIniFiles.Contains(Path.GetFileName(path)))
             .Where(path => !_ignoredIniFiles.Contains(Path.GetFileName(path)))
-            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase);
+            .GroupBy(path => Path.GetFileName(path), StringComparer.OrdinalIgnoreCase)
+            .Select(group => group
+                .OrderBy(path => IsInConvertedFolder(path) ? 1 : 0)
+                .ThenBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .First())
+            .OrderBy(path => Path.GetFileName(path), StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static IEnumerable<string> EnumerateDistrIniFiles(string folder)
+    {
+        if (!Directory.Exists(folder)) return Array.Empty<string>();
+
+        return Directory.EnumerateFiles(folder, "*", SearchOption.TopDirectoryOnly)
+            .Where(path => Path.GetExtension(path).Equals(".ini", StringComparison.OrdinalIgnoreCase))
+            .Where(path => Path.GetFileName(path).EndsWith("_DISTR.ini", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private bool IsInConvertedFolder(string path)
+    {
+        string? parent = Path.GetDirectoryName(Path.GetFullPath(path));
+        return parent is not null &&
+               string.Equals(
+                   Path.TrimEndingDirectorySeparator(parent),
+                   Path.TrimEndingDirectorySeparator(Path.GetFullPath(_convertedFolderPath)),
+                   StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void MoveProcessedIniFiles(IEnumerable<string> processedIniFiles)
+    {
+        if (!_settings.MoveProcessedIniFiles) return;
+
+        Directory.CreateDirectory(_convertedFolderPath);
+        foreach (var source in processedIniFiles.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (IsInConvertedFolder(source))
+            {
+                continue;
+            }
+
+            string destination = Path.Combine(_convertedFolderPath, Path.GetFileName(source));
+            try
+            {
+                File.Move(source, destination, overwrite: true);
+            }
+            catch (Exception ex)
+            {
+                Warn($"Could not move '{source}' to '{destination}': {ex.Message}");
+            }
+        }
+
+    }
+
+    private static HashSet<string> NormalizeIniFileNames(IEnumerable<string> names)
+    {
+        return names
+            .Select(name => name.Trim())
+            .Where(name => name.Length > 0)
+            .Select(Path.GetFileName)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Select(name => name!)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
     private IEnumerable<ResolvedRule> ResolveRules(IEnumerable<SpidRule> rules, RecordIndex index)
@@ -152,12 +242,6 @@ internal sealed class SPIDThesisDistributor
         {
             int currentOrder = originalOrder++;
             if (!KindEnabled(rule.Kind)) continue;
-            if (rule.HadUnsupportedFinalPrefix)
-            {
-                WarnOnce($"final:{rule.SourcePath}:{rule.LineNumber}",
-                    $"{Path.GetFileName(rule.SourcePath)}:{rule.LineNumber}: SPID's Final modifier only applies to Outfit rules; it is ignored for {rule.Kind}.");
-            }
-
             if (!TryResolveOrCreateDistributedForm(rule, index, out var distributedForm))
             {
                 Warn($"{Path.GetFileName(rule.SourcePath)}:{rule.LineNumber}: could not resolve {rule.Kind} '{rule.RawDistributedForm}'. Rule skipped.");
@@ -174,52 +258,13 @@ internal sealed class SPIDThesisDistributor
             {
                 Source = rule,
                 DistributedForm = distributedForm,
+                DistributedKind = index.GetKind(distributedForm),
                 FormFilters = formFilters,
                 OriginalOrder = currentOrder
             };
         }
     }
 
-
-    private static void LogResolvedFilters(
-        SpidRule rule,
-        ResolvedFormFilterSet filters,
-        RecordIndex index)
-    {
-        foreach (var (groupName, group) in new[]
-                 {
-                     ("match", filters.Match),
-                     ("all", filters.All),
-                     ("not", filters.Not)
-                 })
-        {
-            foreach (var filter in group)
-            {
-                if (filter.IsPlugin)
-                {
-                    Console.WriteLine(
-                        $"  Filter {Path.GetFileName(rule.SourcePath)}:{rule.LineNumber} {groupName} '{filter.Raw}' -> plugin '{filter.PluginName}'.");
-                    continue;
-                }
-
-                if (filter.Candidates.Count == 0)
-                {
-                    Console.WriteLine(
-                        $"  Filter {Path.GetFileName(rule.SourcePath)}:{rule.LineNumber} {groupName} '{filter.Raw}' -> unresolved.");
-                    continue;
-                }
-
-                string resolved = string.Join(", ", filter.Candidates.Select(candidate =>
-                {
-                    string editorId = candidate.EditorId ?? index.GetEditorId(candidate.FormKey) ?? "<no EDID>";
-                    return $"{editorId} [{candidate.Kind}] ({candidate.FormKey})";
-                }));
-
-                Console.WriteLine(
-                    $"  Filter {Path.GetFileName(rule.SourcePath)}:{rule.LineNumber} {groupName} '{filter.Raw}' -> {resolved}.");
-            }
-        }
-    }
 
     private bool TryResolveOrCreateDistributedForm(
         SpidRule rule,
@@ -244,8 +289,6 @@ internal sealed class SPIDThesisDistributor
         distributedForm = keyword.FormKey;
         _keywordsCreated++;
 
-        Console.WriteLine(
-            $"  Created keyword {editorId} ({keyword.FormKey}) for {Path.GetFileName(rule.SourcePath)}:{rule.LineNumber}.");
         return true;
     }
 
@@ -274,6 +317,13 @@ internal sealed class SPIDThesisDistributor
             DistributionKind.Keyword => _settings.EnableKeywords,
             DistributionKind.Spell => _settings.EnableSpells,
             DistributionKind.Perk => _settings.EnablePerks,
+            DistributionKind.Shout => _settings.EnableShouts,
+            DistributionKind.Package => _settings.EnablePackages,
+            DistributionKind.Item => _settings.EnableItems,
+            DistributionKind.Outfit => _settings.EnableOutfits,
+            DistributionKind.SleepOutfit => _settings.EnableSleepOutfits,
+            DistributionKind.Faction => _settings.EnableFactions,
+            DistributionKind.Skin => _settings.EnableSkins,
             _ => false
         };
     }
@@ -285,6 +335,18 @@ internal sealed class SPIDThesisDistributor
             DistributionKind.Keyword => npc.Keywords.Contains(rule.DistributedForm),
             DistributionKind.Spell => npc.Spells.Contains(rule.DistributedForm),
             DistributionKind.Perk => npc.Perks.ContainsKey(rule.DistributedForm),
+            DistributionKind.Shout => npc.Shouts.Contains(rule.DistributedForm),
+            DistributionKind.Package when rule.DistributedKind == IndexedFormKind.Package =>
+                npc.Packages.Contains(rule.DistributedForm),
+            DistributionKind.Package when rule.DistributedKind == IndexedFormKind.FormList =>
+                npc.GetPackageList(rule.Source.PackageIndex) == rule.DistributedForm,
+            DistributionKind.Faction => npc.Factions.Contains(rule.DistributedForm),
+            // Item distributions are additive, so an existing inventory entry does not make
+            // the rule a duplicate. AddItem merges the additional count into that entry.
+            DistributionKind.Item => false,
+            DistributionKind.Outfit => npc.DefaultOutfit == rule.DistributedForm,
+            DistributionKind.SleepOutfit => npc.SleepingOutfit == rule.DistributedForm,
+            DistributionKind.Skin => npc.Skin == rule.DistributedForm,
             _ => true
         };
     }
@@ -296,6 +358,13 @@ internal sealed class SPIDThesisDistributor
             DistributionKind.Keyword => AddKeyword(rule.DistributedForm, npc),
             DistributionKind.Spell => AddSpell(rule.DistributedForm, npc),
             DistributionKind.Perk => AddPerk(rule.DistributedForm, npc),
+            DistributionKind.Shout => AddShout(rule.DistributedForm, npc),
+            DistributionKind.Package => AddPackage(rule, npc),
+            DistributionKind.Faction => AddFaction(rule.DistributedForm, npc),
+            DistributionKind.Item => AddItem(rule, npc),
+            DistributionKind.Outfit => AddOutfit(rule.DistributedForm, npc),
+            DistributionKind.SleepOutfit => AddSleepOutfit(rule.DistributedForm, npc),
+            DistributionKind.Skin => AddSkin(rule.DistributedForm, npc),
             _ => false
         };
     }
@@ -303,22 +372,6 @@ internal sealed class SPIDThesisDistributor
     private bool AddKeyword(FormKey keyword, NpcEvaluationState npc)
     {
         var modified = _state.PatchMod.Npcs.GetOrAddAsOverride(npc.Source);
-        if (_settings.EnableTemplateHandling && npc.InheritsKeywords && !npc.KeywordsMaterialized)
-        {
-            if (!_settings.MaterializeInheritedLists || !npc.CanMaterializeKeywords)
-            {
-                return false;
-            }
-
-            modified.Keywords = new();
-            foreach (var inherited in npc.Keywords)
-            {
-                modified.Keywords.Add(inherited);
-            }
-            modified.Configuration.TemplateFlags &= ~NpcConfiguration.TemplateFlag.Keywords;
-            npc.KeywordsMaterialized = true;
-        }
-
         modified.Keywords ??= new();
         if (modified.Keywords.Any(x => x.FormKey == keyword)) return false;
         modified.Keywords.Add(keyword);
@@ -330,8 +383,6 @@ internal sealed class SPIDThesisDistributor
     private bool AddSpell(FormKey spell, NpcEvaluationState npc)
     {
         var modified = _state.PatchMod.Npcs.GetOrAddAsOverride(npc.Source);
-        if (!EnsureSpellListMaterialized(modified, npc)) return false;
-
         modified.ActorEffect ??= new();
         if (modified.ActorEffect.Any(x => x.FormKey == spell)) return false;
         modified.ActorEffect.Add(new FormLink<ISpellGetter>(spell));
@@ -344,8 +395,6 @@ internal sealed class SPIDThesisDistributor
     private bool AddPerk(FormKey perk, NpcEvaluationState npc)
     {
         var modified = _state.PatchMod.Npcs.GetOrAddAsOverride(npc.Source);
-        if (!EnsureSpellListMaterialized(modified, npc)) return false;
-
         modified.Perks ??= new();
         if (modified.Perks.Any(x => x.Perk.FormKey == perk)) return false;
         modified.Perks.Add(new PerkPlacement
@@ -359,38 +408,140 @@ internal sealed class SPIDThesisDistributor
         return true;
     }
 
-    private bool EnsureSpellListMaterialized(Npc modified, NpcEvaluationState npc)
+
+    private bool AddShout(FormKey shout, NpcEvaluationState npc)
     {
-        if (!_settings.EnableTemplateHandling || !npc.InheritsSpellList || npc.SpellListMaterialized) return true;
-        if (!_settings.MaterializeInheritedLists || !npc.CanMaterializeSpellList)
+        var modified = _state.PatchMod.Npcs.GetOrAddAsOverride(npc.Source);
+        modified.ActorEffect ??= new();
+        if (modified.ActorEffect.Any(x => x.FormKey == shout)) return false;
+        modified.ActorEffect.Add(new FormLink<ISpellRecordGetter>(shout));
+        npc.RegisterShout(shout);
+        _shoutsAdded++;
+        return true;
+    }
+
+    private bool AddFaction(FormKey faction, NpcEvaluationState npc)
+    {
+        var modified = _state.PatchMod.Npcs.GetOrAddAsOverride(npc.Source);
+        if (modified.Factions.Any(x => x.Faction.FormKey == faction)) return false;
+        modified.Factions.Add(new RankPlacement
         {
+            Faction = new FormLink<IFactionGetter>(faction),
+            Rank = 1
+        });
+        npc.RegisterFaction(faction);
+        _factionsAdded++;
+        return true;
+    }
+
+    private bool AddPackage(ResolvedRule rule, NpcEvaluationState npc)
+    {
+        var modified = _state.PatchMod.Npcs.GetOrAddAsOverride(npc.Source);
+
+        if (rule.DistributedKind == IndexedFormKind.Package)
+        {
+            if (modified.Packages.Any(x => x.FormKey == rule.DistributedForm)) return false;
+            int index = Math.Clamp(rule.Source.PackageIndex, 0, modified.Packages.Count);
+            modified.Packages.Insert(index, new FormLink<IPackageGetter>(rule.DistributedForm));
+            npc.RegisterPackage(rule.DistributedForm);
+            _packagesAdded++;
+            return true;
+        }
+
+        if (rule.DistributedKind != IndexedFormKind.FormList) return false;
+        int slot = rule.Source.PackageIndex;
+        if (slot is < 0 or > 4)
+        {
+            WarnOnce(
+                $"package-list-index:{rule.Source.SourcePath}:{rule.Source.LineNumber}",
+                $"{Path.GetFileName(rule.Source.SourcePath)}:{rule.Source.LineNumber}: package FormList index {slot} is outside SPID's supported 0-4 range. Rule skipped.");
             return false;
         }
 
-        modified.ActorEffect = new();
-        foreach (var inheritedSpell in npc.Spells)
+        switch (slot)
         {
-            modified.ActorEffect.Add(new FormLink<ISpellGetter>(inheritedSpell));
+            case 0: modified.DefaultPackageList.SetTo(rule.DistributedForm); break;
+            case 1: modified.SpectatorOverridePackageList.SetTo(rule.DistributedForm); break;
+            case 2: modified.ObserveDeadBodyOverridePackageList.SetTo(rule.DistributedForm); break;
+            case 3: modified.GuardWarnOverridePackageList.SetTo(rule.DistributedForm); break;
+            case 4: modified.CombatOverridePackageList.SetTo(rule.DistributedForm); break;
         }
 
-        modified.Perks = new();
-        foreach (var inheritedPerk in npc.Perks)
+        npc.RegisterPackageList(slot, rule.DistributedForm);
+        _packageListsAssigned++;
+        return true;
+    }
+
+
+    private bool AddItem(ResolvedRule rule, NpcEvaluationState npc)
+    {
+        int count = RuleMatcher.SelectItemCount(
+            rule.Source,
+            npc.Source.FormKey.ToString(),
+            _runSeed);
+        if (count <= 0) return false;
+
+        var modified = _state.PatchMod.Npcs.GetOrAddAsOverride(npc.Source);
+        modified.Items ??= new();
+        var existing = modified.Items.FirstOrDefault(x => x.Item.Item.FormKey == rule.DistributedForm);
+        if (existing is not null)
         {
-            modified.Perks.Add(new PerkPlacement
+            existing.Item.Count += count;
+        }
+        else
+        {
+            modified.Items.Add(new ContainerEntry
             {
-                Perk = new FormLink<IPerkGetter>(inheritedPerk.Key),
-                Rank = inheritedPerk.Value
+                Item = new ContainerItem
+                {
+                    Item = new FormLink<IItemGetter>(rule.DistributedForm),
+                    Count = count
+                }
             });
         }
 
-        modified.Configuration.TemplateFlags &= ~NpcConfiguration.TemplateFlag.SpellList;
-        npc.SpellListMaterialized = true;
+        npc.RegisterItem(rule.DistributedForm, count);
+        _itemDistributionsApplied++;
+        _itemQuantityAdded += count;
+        return true;
+    }
+
+    private bool AddOutfit(FormKey outfit, NpcEvaluationState npc)
+    {
+        var modified = _state.PatchMod.Npcs.GetOrAddAsOverride(npc.Source);
+        if (modified.DefaultOutfit.FormKey == outfit) return false;
+
+        modified.DefaultOutfit.SetTo(outfit);
+        npc.RegisterOutfit(outfit);
+        _outfitsAssigned++;
+        return true;
+    }
+
+    private bool AddSleepOutfit(FormKey outfit, NpcEvaluationState npc)
+    {
+        var modified = _state.PatchMod.Npcs.GetOrAddAsOverride(npc.Source);
+        if (modified.SleepingOutfit.FormKey == outfit) return false;
+
+        modified.SleepingOutfit.SetTo(outfit);
+        npc.RegisterSleepOutfit(outfit);
+        _sleepOutfitsAssigned++;
+        return true;
+    }
+
+    private bool AddSkin(FormKey armor, NpcEvaluationState npc)
+    {
+        var modified = _state.PatchMod.Npcs.GetOrAddAsOverride(npc.Source);
+        if (modified.WornArmor.FormKey == armor) return false;
+
+        modified.WornArmor.SetTo(armor);
+        npc.RegisterSkin(armor);
+        _skinsAssigned++;
         return true;
     }
 
     private void Warn(string message)
     {
-        Console.WriteLine($"WARNING: {message}");
+        SpidLog.Warn(message);
     }
 
     private void WarnOnce(string key, string message)
@@ -398,10 +549,4 @@ internal sealed class SPIDThesisDistributor
         if (_warningOnce.Add(key)) Warn(message);
     }
 
-    private sealed class RuleRunStats
-    {
-        public int Matched { get; set; }
-        public int Applied { get; set; }
-        public int AlreadyHad { get; set; }
-    }
 }

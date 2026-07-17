@@ -8,99 +8,121 @@ internal static class SpidIniParser
     private static readonly Regex Bars = new(@"\s*\|\s*", RegexOptions.Compiled);
     private static readonly Regex Commas = new(@"\s*,\s*", RegexOptions.Compiled);
 
-    public static IReadOnlyList<SpidRule> ParseFiles(IEnumerable<string> paths, Action<string> warn)
+    public static SpidParseResult ParseFiles(IEnumerable<string> paths, Action<string> warn)
     {
         var rules = new List<SpidRule>();
+        var processedFiles = new List<string>();
+
         foreach (var path in paths)
         {
-            ParseFile(path, rules, warn);
+            if (TryParseFile(path, rules, warn))
+            {
+                processedFiles.Add(path);
+            }
         }
 
-        return rules;
+        return new SpidParseResult(rules, processedFiles);
     }
 
-    private static void ParseFile(string path, ICollection<SpidRule> output, Action<string> warn)
+    private static bool TryParseFile(string path, ICollection<SpidRule> output, Action<string> warn)
     {
         bool inNamedSection = false;
         int lineNumber = 0;
 
-        foreach (var originalLine in File.ReadLines(path))
+        try
         {
-            lineNumber++;
-            var line = originalLine.Trim();
-            if (line.Length == 0 || line.StartsWith(';') || line.StartsWith('#'))
+            foreach (var originalLine in File.ReadLines(path))
             {
-                continue;
-            }
-
-            if (line.StartsWith('[') && line.EndsWith(']'))
-            {
-                inNamedSection = line.Length > 2;
-                continue;
-            }
-
-            // SPID reads only the unnamed/default INI section.
-            if (inNamedSection)
-            {
-                continue;
-            }
-
-            int equals = line.IndexOf('=');
-            if (equals <= 0)
-            {
-                continue;
-            }
-
-            var rawKey = line[..equals].Trim();
-            var rawValue = line[(equals + 1)..].Trim();
-            if (!TryParseKind(rawKey, out var kind, out var hadFinal))
-            {
-                continue;
-            }
-
-            try
-            {
-                var sanitized = Sanitize(rawValue);
-                var pieces = sanitized.Split('|');
-                if (pieces.Length > 7)
+                lineNumber++;
+                var line = originalLine.Trim();
+                if (line.Length == 0 || line.StartsWith(';') || line.StartsWith('#'))
                 {
-                    warn($"{Path.GetFileName(path)}:{lineNumber}: expected at most 7 SPID fields, found {pieces.Length}. Rule skipped.");
                     continue;
                 }
 
-                Array.Resize(ref pieces, 7);
-                for (int i = 0; i < pieces.Length; i++)
+                if (line.StartsWith('[') && line.EndsWith(']'))
                 {
-                    pieces[i] = NormalizeOptional(pieces[i]);
-                }
-
-                if (string.IsNullOrWhiteSpace(pieces[0]))
-                {
-                    warn($"{Path.GetFileName(path)}:{lineNumber}: missing distributed form. Rule skipped.");
+                    inNamedSection = line.Length > 2;
                     continue;
                 }
 
-                var rule = new SpidRule
+                // SPID reads only the unnamed/default INI section.
+                if (inNamedSection)
                 {
-                    Kind = kind,
-                    RawDistributedForm = pieces[0],
-                    StringFilters = ParseTextFilters(pieces[1]),
-                    FormFilters = ParseFormFilters(pieces[2]),
-                    LevelFilters = ParseLevelFilters(pieces[3], path, lineNumber, warn),
-                    Traits = ParseTraits(pieces[4]),
-                    Chance = ParseChance(pieces[6], path, lineNumber, warn),
-                    SourcePath = path,
-                    LineNumber = lineNumber,
-                    RawLine = originalLine,
-                    HadUnsupportedFinalPrefix = hadFinal
-                };
+                    continue;
+                }
 
-                output.Add(rule);
+                int equals = line.IndexOf('=');
+                if (equals <= 0)
+                {
+                    continue;
+                }
+
+                var rawKey = line[..equals].Trim();
+                var rawValue = line[(equals + 1)..].Trim();
+                if (!TryParseKind(rawKey, out var kind, out var hadFinal))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var sanitized = Sanitize(rawValue);
+                    var pieces = sanitized.Split('|');
+                    if (pieces.Length > 7)
+                    {
+                        throw new FormatException($"expected at most 7 SPID fields, found {pieces.Length}");
+                    }
+
+                    Array.Resize(ref pieces, 7);
+                    for (int i = 0; i < pieces.Length; i++)
+                    {
+                        pieces[i] = NormalizeOptional(pieces[i]);
+                    }
+
+                    if (string.IsNullOrWhiteSpace(pieces[0]))
+                    {
+                        throw new FormatException("missing distributed form");
+                    }
+
+                    if (hadFinal && kind != DistributionKind.Outfit)
+                    {
+                        warn($"\t\t[{rawKey} = {rawValue}]");
+                        warn("\t\t\tFinal modifier can only be applied to Outfits.");
+                    }
+
+                    var rule = new SpidRule
+                    {
+                        Kind = kind,
+                        RawDistributedForm = pieces[0],
+                        StringFilters = ParseTextFilters(pieces[1]),
+                        FormFilters = ParseFormFilters(pieces[2]),
+                        LevelFilters = ParseLevelFilters(pieces[3], path, lineNumber, warn),
+                        Traits = ParseTraits(pieces[4]),
+                        Count = ParseCount(kind, pieces[5], path, lineNumber, warn),
+                        PackageIndex = ParsePackageIndex(kind, pieces[5], path, lineNumber, warn),
+                        Chance = ParseChance(pieces[6], path, lineNumber, warn),
+                        SourcePath = path,
+                        LineNumber = lineNumber,
+                        RawLine = originalLine,
+                        HadUnsupportedFinalPrefix = hadFinal && kind != DistributionKind.Outfit,
+                        IsFinalOutfit = hadFinal && kind == DistributionKind.Outfit
+                    };
+
+                    output.Add(rule);
+                }
+                catch (Exception ex)
+                {
+                    warn($"\t\tFailed to parse entry [{rawKey} = {rawValue}]: {ex.Message}");
+                }
             }
-            catch (Exception ex)
-            {
-                warn($"{Path.GetFileName(path)}:{lineNumber}: failed to parse rule: {ex.Message}");
-            }
+
+            return true;
+        }
+        catch (Exception)
+        {
+            warn("\t\tcouldn't read INI");
+            return false;
         }
     }
 
@@ -124,6 +146,48 @@ internal static class SpidIniParser
         if (key.Equals("Perk", StringComparison.OrdinalIgnoreCase))
         {
             kind = DistributionKind.Perk;
+            return true;
+        }
+
+        if (key.Equals("Item", StringComparison.OrdinalIgnoreCase))
+        {
+            kind = DistributionKind.Item;
+            return true;
+        }
+
+        if (key.Equals("Outfit", StringComparison.OrdinalIgnoreCase))
+        {
+            kind = DistributionKind.Outfit;
+            return true;
+        }
+
+        if (key.Equals("Shout", StringComparison.OrdinalIgnoreCase))
+        {
+            kind = DistributionKind.Shout;
+            return true;
+        }
+
+        if (key.Equals("Package", StringComparison.OrdinalIgnoreCase))
+        {
+            kind = DistributionKind.Package;
+            return true;
+        }
+
+        if (key.Equals("SleepOutfit", StringComparison.OrdinalIgnoreCase))
+        {
+            kind = DistributionKind.SleepOutfit;
+            return true;
+        }
+
+        if (key.Equals("Faction", StringComparison.OrdinalIgnoreCase))
+        {
+            kind = DistributionKind.Faction;
+            return true;
+        }
+
+        if (key.Equals("Skin", StringComparison.OrdinalIgnoreCase))
+        {
+            kind = DistributionKind.Skin;
             return true;
         }
 
@@ -294,6 +358,49 @@ internal static class SpidIniParser
         }
 
         return result;
+    }
+
+
+    private static IntRange ParseCount(
+        DistributionKind kind,
+        string value,
+        string path,
+        int lineNumber,
+        Action<string> warn)
+    {
+        if (kind != DistributionKind.Item || string.IsNullOrWhiteSpace(value))
+        {
+            return new IntRange(1, 1);
+        }
+
+        if (TryParseRange(value, '-', out var count))
+        {
+            return count;
+        }
+
+        warn($"{Path.GetFileName(path)}:{lineNumber}: invalid item count '{value}'. Using 1.");
+        return new IntRange(1, 1);
+    }
+
+    private static int ParsePackageIndex(
+        DistributionKind kind,
+        string value,
+        string path,
+        int lineNumber,
+        Action<string> warn)
+    {
+        if (kind != DistributionKind.Package || string.IsNullOrWhiteSpace(value))
+        {
+            return 0;
+        }
+
+        if (int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var index) && index >= 0)
+        {
+            return index;
+        }
+
+        warn($"{Path.GetFileName(path)}:{lineNumber}: invalid package index '{value}'. Using 0.");
+        return 0;
     }
 
     private static ChanceFilter ParseChance(string value, string path, int lineNumber, Action<string> warn)

@@ -1,8 +1,8 @@
 {
   "Nickname": "SPIDThesis",
   "Visibility": "Visible",
-  "OneLineDescription": "Statically distributes SPID Keyword, Spell, and Perk rules to NPC records.",
-  "LongDescription": "Reads *_DISTR.ini files from the configured Skyrim Data directory and applies supported SPID Keyword, Spell, and Perk distributions through a Synthesis patch. Includes ordered keyword chaining, creation and distribution of missing bare-EditorID keywords, optional NPC/LVLN template matching (disabled by default), form and string filters, static level and trait checks, stable chance rolls, duplicate prevention, optional template-list materialization, and compatibility with Synthesis 0.36+ master-overflow split outputs.",
+  "OneLineDescription": "Statically distributes supported SPID rules directly to winning NPC records.",
+  "LongDescription": "Reads selected *_DISTR.ini files from the Data root and optional SPIDThesisConverted folder, then applies direct-record Keyword, Faction, Perk, Spell, Shout, Package, SleepOutfit, Outfit, Item, and Skin distributions through Synthesis. Includes missing bare-EditorID keyword creation, package and package-list handling, fresh per-run normal chance and item-count rolls, first-match outfit/sleep-outfit/skin assignment, ordered keyword chaining, optional INI filename allowlisting, optional post-run INI archiving, and Synthesis 0.36+ master-overflow split output compatibility. NPC templates and inherited data are intentionally ignored.",
   "PreferredAutoVersioning": "Default",
   "RequiredMods": [],
   "TargetedReleases": [

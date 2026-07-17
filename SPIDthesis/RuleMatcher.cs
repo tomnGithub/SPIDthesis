@@ -5,13 +5,27 @@ namespace SPIDThesis;
 
 internal static class RuleMatcher
 {
-    public static bool Matches(ResolvedRule rule, NpcEvaluationState npc, Settings settings)
+    public static bool Matches(ResolvedRule rule, NpcEvaluationState npc, int runSeed)
     {
         return MatchesStrings(rule.Source.StringFilters, npc.StringCandidates) &&
                MatchesForms(rule.FormFilters, npc) &&
                MatchesLevel(rule.Source.LevelFilters, npc) &&
                MatchesTraits(rule.Source.Traits, npc) &&
-               PassesChance(rule.Source, npc.Source.FormKey.ToString(), settings.RandomSeed);
+               PassesChance(rule.Source, npc.Source.FormKey.ToString(), runSeed);
+    }
+
+
+    public static int SelectItemCount(SpidRule rule, string npcFormKey, int randomSeed)
+    {
+        int minimum = Math.Max(0, rule.Count.Minimum);
+        int maximum = Math.Max(0, rule.Count.Maximum);
+        if (maximum <= minimum) return minimum;
+
+        string identity = $"{randomSeed}|{Path.GetFileName(rule.SourcePath)}|{rule.LineNumber}|{rule.RawLine}|{npcFormKey}|item-count";
+        byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(identity));
+        ulong value = BitConverter.ToUInt64(hash, 0);
+        ulong width = (ulong)((long)maximum - minimum + 1L);
+        return minimum + (int)(value % width);
     }
 
     private static bool MatchesStrings(TextFilterSet filters, HashSet<string> candidates)
@@ -44,7 +58,7 @@ internal static class RuleMatcher
         if (filter.ActorLevel is not null && !filter.ActorLevel.Contains(npc.ActorLevel)) return false;
 
         // SPID evaluates skill values/weights on live actors. A Synthesis patch has no reliable equivalent
-        // for every NPC/template combination, so rules using skill filters fail closed instead of over-distributing.
+        // for every NPC record, so rules using skill filters fail closed instead of over-distributing.
         if (filter.Skills.Count > 0) return false;
 
         return true;

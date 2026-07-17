@@ -6,7 +6,14 @@ internal enum DistributionKind
 {
     Keyword,
     Spell,
-    Perk
+    Perk,
+    Shout,
+    Package,
+    Item,
+    Outfit,
+    SleepOutfit,
+    Faction,
+    Skin
 }
 
 internal enum IndexedFormKind
@@ -22,8 +29,11 @@ internal enum IndexedFormKind
     Outfit,
     Spell,
     Perk,
-    FormList,
-    Armor
+    Shout,
+    Package,
+    Armor,
+    Item,
+    FormList
 }
 
 internal sealed record IndexedForm(FormKey FormKey, string? EditorId, IndexedFormKind Kind);
@@ -88,12 +98,20 @@ internal sealed class SpidRule
     public RawFormFilterSet FormFilters { get; init; } = new();
     public LevelFilter LevelFilters { get; init; } = new();
     public TraitFilter Traits { get; init; } = new();
+    public IntRange Count { get; init; } = new(1, 1);
+    public int PackageIndex { get; init; }
     public ChanceFilter Chance { get; init; } = ChanceFilter.Always;
     public string SourcePath { get; init; } = string.Empty;
     public int LineNumber { get; init; }
     public string RawLine { get; init; } = string.Empty;
     public bool HadUnsupportedFinalPrefix { get; init; }
+    public bool IsFinalOutfit { get; init; }
 }
+
+
+internal sealed record SpidParseResult(
+    IReadOnlyList<SpidRule> Rules,
+    IReadOnlyList<string> ProcessedFiles);
 
 internal sealed class ResolvedFormFilter
 {
@@ -116,6 +134,7 @@ internal sealed class ResolvedRule
 {
     public SpidRule Source { get; init; } = null!;
     public FormKey DistributedForm { get; init; }
+    public IndexedFormKind DistributedKind { get; init; }
     public ResolvedFormFilterSet FormFilters { get; init; } = new();
     public int OriginalOrder { get; init; }
 }
