@@ -2,7 +2,7 @@ using System.Reflection;
 using Mutagen.Bethesda.Plugins;
 using Mutagen.Bethesda.Skyrim;
 
-namespace SPIDThesis;
+namespace SPIDthesis;
 
 internal sealed class NpcEvaluationState
 {
@@ -163,7 +163,6 @@ internal sealed class NpcEvaluationState
 
     private static int GetStaticActorLevel(INpcGetter npc)
     {
-        // Avoid coupling to a specific generated ANpcLevel implementation: fixed levels expose a Level property.
         object levelObject = npc.Configuration.Level;
         PropertyInfo? property = levelObject.GetType().GetProperty("Level", BindingFlags.Instance | BindingFlags.Public);
         if (property?.GetValue(levelObject) is IConvertible convertible)
@@ -174,7 +173,6 @@ internal sealed class NpcEvaluationState
             }
             catch
             {
-                // Fall through to the autocalc minimum.
             }
         }
 

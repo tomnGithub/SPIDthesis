@@ -3,7 +3,7 @@ using Mutagen.Bethesda.Plugins;
 using Mutagen.Bethesda.Skyrim;
 using Mutagen.Bethesda.Synthesis;
 
-namespace SPIDThesis;
+namespace SPIDthesis;
 
 internal sealed class RecordIndex
 {
@@ -166,9 +166,6 @@ internal sealed class RecordIndex
         var token = raw.Trim();
         var result = new ResolvedFormFilter { Raw = raw };
 
-        // Explicit form references also end in .esm/.esp/.esl. They must be parsed before
-        // checking for a plugin-only filter, otherwise 0x01BCC0~Skyrim.esm is incorrectly
-        // treated as the literal plugin name "0x01BCC0~Skyrim.esm" and can never match.
         if (TryParseFormKey(token, out var formKey))
         {
             if (_byFormKey.TryGetValue(formKey, out var indexed))
@@ -177,7 +174,6 @@ internal sealed class RecordIndex
             }
             else
             {
-                // Keep a concrete FormKey candidate even for record types not indexed by this patcher.
                 result.Candidates.Add(new IndexedForm(formKey, null, IndexedFormKind.Unknown));
             }
             return result;
@@ -236,7 +232,6 @@ internal sealed class RecordIndex
         if (token.Contains('~') || token.Contains(':') || token.Contains('|') || token.Contains(',')) return false;
         if (LooksLikePluginName(token)) return false;
 
-        // A malformed explicit hexadecimal reference should fail closed rather than becoming a new KYWD.
         if (token.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) return false;
 
         return true;
@@ -281,7 +276,6 @@ internal sealed class RecordIndex
 
     private static bool LooksLikePluginName(string token)
     {
-        // A plugin-only filter is just a filename. Explicit form references contain a separator.
         if (token.Contains('~') || token.Contains(':')) return false;
 
         return token.EndsWith(".esm", StringComparison.OrdinalIgnoreCase) ||

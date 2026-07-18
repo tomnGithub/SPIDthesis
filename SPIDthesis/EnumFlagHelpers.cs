@@ -1,4 +1,4 @@
-namespace SPIDThesis;
+namespace SPIDthesis;
 
 internal static class EnumFlagHelpers
 {

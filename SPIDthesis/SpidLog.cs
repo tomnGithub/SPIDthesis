@@ -1,4 +1,4 @@
-namespace SPIDThesis;
+namespace SPIDthesis;
 
 internal static class SpidLog
 {
@@ -18,7 +18,6 @@ internal static class SpidLog
 
     public static void Warn(string message)
     {
-        // SPID's logger pattern prints the timestamp and message without a level label.
         Info(message);
     }
 }

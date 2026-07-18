@@ -1,6 +1,6 @@
 using Mutagen.Bethesda.Plugins;
 
-namespace SPIDThesis;
+namespace SPIDthesis;
 
 internal static class KeywordRuleOrdering
 {
@@ -17,7 +17,6 @@ internal static class KeywordRuleOrdering
         var ordered = new List<ResolvedRule>(rules.Count);
         ordered.AddRange(OrderKeywords(keywordRules, index, warn));
 
-        // Keyword changes are visible to every later distribution category.
         ordered.AddRange(rules.Where(x => x.Source.Kind == DistributionKind.Faction).OrderBy(x => x.OriginalOrder));
         ordered.AddRange(rules.Where(x => x.Source.Kind == DistributionKind.Perk).OrderBy(x => x.OriginalOrder));
         ordered.AddRange(rules.Where(x => x.Source.Kind == DistributionKind.Spell).OrderBy(x => x.OriginalOrder));

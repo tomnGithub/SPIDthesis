@@ -1,7 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 
-namespace SPIDThesis;
+namespace SPIDthesis;
 
 internal static class RuleMatcher
 {
@@ -13,7 +13,6 @@ internal static class RuleMatcher
                MatchesTraits(rule.Source.Traits, npc) &&
                PassesChance(rule.Source, npc.Source.FormKey.ToString(), runSeed);
     }
-
 
     public static int SelectItemCount(SpidRule rule, string npcFormKey, int randomSeed)
     {
@@ -57,8 +56,6 @@ internal static class RuleMatcher
     {
         if (filter.ActorLevel is not null && !filter.ActorLevel.Contains(npc.ActorLevel)) return false;
 
-        // SPID evaluates skill values/weights on live actors. A Synthesis patch has no reliable equivalent
-        // for every NPC record, so rules using skill filters fail closed instead of over-distributing.
         if (filter.Skills.Count > 0) return false;
 
         return true;
@@ -72,8 +69,6 @@ internal static class RuleMatcher
         if (traits.Child is not null && traits.Child.Value != npc.Child) return false;
         if (traits.Leveled is not null && traits.Leveled.Value != npc.Leveled) return false;
 
-        // Teammate and starts-dead are actor-reference/runtime states. Positive requirements fail closed;
-        // negative requirements pass because a base NPC record cannot prove the runtime state.
         if (traits.Teammate == true) return false;
         if (traits.StartsDead == true) return false;
 

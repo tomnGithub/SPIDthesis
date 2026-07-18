@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Text.RegularExpressions;
 
-namespace SPIDThesis;
+namespace SPIDthesis;
 
 internal static class SpidIniParser
 {
@@ -46,7 +46,6 @@ internal static class SpidIniParser
                     continue;
                 }
 
-                // SPID reads only the unnamed/default INI section.
                 if (inNamedSection)
                 {
                     continue;
@@ -359,7 +358,6 @@ internal static class SpidIniParser
 
         return result;
     }
-
 
     private static IntRange ParseCount(
         DistributionKind kind,

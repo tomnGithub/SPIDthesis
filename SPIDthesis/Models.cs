@@ -1,6 +1,6 @@
 using Mutagen.Bethesda.Plugins;
 
-namespace SPIDThesis;
+namespace SPIDthesis;
 
 internal enum DistributionKind
 {
@@ -107,7 +107,6 @@ internal sealed class SpidRule
     public bool HadUnsupportedFinalPrefix { get; init; }
     public bool IsFinalOutfit { get; init; }
 }
-
 
 internal sealed record SpidParseResult(
     IReadOnlyList<SpidRule> Rules,
