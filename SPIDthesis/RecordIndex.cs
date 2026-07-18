@@ -9,6 +9,8 @@ internal sealed class RecordIndex
 {
     private readonly Dictionary<string, List<IndexedForm>> _byEditorId = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<FormKey, IndexedForm> _byFormKey = new();
+    private readonly Dictionary<uint, List<IndexedForm>> _byBareFormId = new();
+    private readonly Dictionary<ModKey, RuntimeFormIdMapping> _runtimeFormIdsByMod = new();
     private readonly HashSet<string> _knownPlugins = new(StringComparer.OrdinalIgnoreCase);
 
     public Dictionary<FormKey, IKeywordGetter> Keywords { get; } = new();
@@ -23,13 +25,41 @@ internal sealed class RecordIndex
     public Dictionary<FormKey, IRaceGetter> Races { get; } = new();
     public Dictionary<FormKey, HashSet<FormKey>> FormListItems { get; } = new();
 
-    private RecordIndex()
+    private RecordIndex(IPatcherState<ISkyrimMod, ISkyrimModGetter> state)
     {
+        uint fullIndex = 0;
+        uint lightIndex = 0;
+
+        foreach (var listing in state.LoadOrder.ListedOrder)
+        {
+            if (!listing.Enabled || listing.Mod is null) continue;
+
+            if (listing.Mod.IsSmallMaster)
+            {
+                if (lightIndex <= 0xFFF)
+                {
+                    _runtimeFormIdsByMod[listing.ModKey] = new RuntimeFormIdMapping(
+                        Prefix: 0xFE000000u | (lightIndex << 12),
+                        LocalIdMask: 0xFFFu);
+                }
+                lightIndex++;
+            }
+            else
+            {
+                if (fullIndex <= 0xFD)
+                {
+                    _runtimeFormIdsByMod[listing.ModKey] = new RuntimeFormIdMapping(
+                        Prefix: fullIndex << 24,
+                        LocalIdMask: 0xFFFFFFu);
+                }
+                fullIndex++;
+            }
+        }
     }
 
     public static RecordIndex Build(IPatcherState<ISkyrimMod, ISkyrimModGetter> state)
     {
-        var index = new RecordIndex();
+        var index = new RecordIndex(state);
 
         foreach (var record in state.LoadOrder.PriorityOrder.Keyword().WinningOverrides())
         {
@@ -132,6 +162,21 @@ internal sealed class RecordIndex
         _byFormKey[formKey] = indexed;
         _knownPlugins.Add(formKey.ModKey.FileName.String);
 
+        // Convert the origin FormKey into the runtime FormID used by SPID. This keeps
+        // normal plugin load indices and FE/light-plugin indices distinct, so local IDs
+        // from different plugins cannot be confused with one another.
+        if (_runtimeFormIdsByMod.TryGetValue(formKey.ModKey, out var runtimeMapping) &&
+            formKey.ID <= runtimeMapping.LocalIdMask)
+        {
+            uint runtimeFormId = runtimeMapping.Prefix | formKey.ID;
+            if (!_byBareFormId.TryGetValue(runtimeFormId, out var formsWithId))
+            {
+                formsWithId = new List<IndexedForm>();
+                _byBareFormId.Add(runtimeFormId, formsWithId);
+            }
+            formsWithId.Add(indexed);
+        }
+
         if (string.IsNullOrWhiteSpace(editorId)) return;
         if (!_byEditorId.TryGetValue(editorId, out var values))
         {
@@ -211,6 +256,64 @@ internal sealed class RecordIndex
             return false;
         }
 
+        FormResolutionFailure? bareFormFailure = null;
+        if (TryParseBareFormId(token, out var bareFormId))
+        {
+            if (_byBareFormId.TryGetValue(bareFormId, out var formIdCandidates))
+            {
+                var candidate = formIdCandidates.FirstOrDefault(x => IsCorrectDistributedType(kind, x.FormKey));
+                if (candidate is not null)
+                {
+                    if (kind == DistributionKind.Keyword && string.IsNullOrWhiteSpace(candidate.EditorId))
+                    {
+                        bareFormFailure = new FormResolutionFailure
+                        {
+                            Kind = FormResolutionFailureKind.InvalidKeyword,
+                            Raw = raw,
+                            HasFormKey = true,
+                            FormKey = candidate.FormKey,
+                            HasNumericFormId = true,
+                            NumericFormId = bareFormId,
+                            ExpectedKind = IndexedFormKind.Keyword,
+                            ActualKind = candidate.Kind
+                        };
+                    }
+                    else
+                    {
+                        formKey = candidate.FormKey;
+                        failure = new FormResolutionFailure();
+                        return true;
+                    }
+                }
+                else
+                {
+                    var actual = formIdCandidates.First();
+                    bareFormFailure = new FormResolutionFailure
+                    {
+                        Kind = FormResolutionFailureKind.MismatchingFormType,
+                        Raw = raw,
+                        HasFormKey = true,
+                        FormKey = actual.FormKey,
+                        HasNumericFormId = true,
+                        NumericFormId = bareFormId,
+                        ExpectedKind = GetExpectedKind(kind),
+                        ActualKind = actual.Kind
+                    };
+                }
+            }
+            else
+            {
+                bareFormFailure = new FormResolutionFailure
+                {
+                    Kind = FormResolutionFailureKind.UnknownFormId,
+                    Raw = raw,
+                    HasNumericFormId = true,
+                    NumericFormId = bareFormId,
+                    ExpectedKind = GetExpectedKind(kind)
+                };
+            }
+        }
+
         if (_byEditorId.TryGetValue(token, out var candidates))
         {
             var candidate = candidates.FirstOrDefault(x => IsCorrectDistributedType(kind, x.FormKey));
@@ -234,7 +337,7 @@ internal sealed class RecordIndex
         }
 
         formKey = default;
-        failure = new FormResolutionFailure
+        failure = bareFormFailure ?? new FormResolutionFailure
         {
             Kind = FormResolutionFailureKind.UnknownEditorId,
             Raw = raw,
@@ -290,6 +393,46 @@ internal sealed class RecordIndex
             return result;
         }
 
+        FormResolutionFailure? bareFormFailure = null;
+        if (TryParseBareFormId(token, out var bareFormId))
+        {
+            if (_byBareFormId.TryGetValue(bareFormId, out var formIdCandidates))
+            {
+                var validCandidates = formIdCandidates
+                    .Where(x => x.Kind != IndexedFormKind.Keyword || !string.IsNullOrWhiteSpace(x.EditorId))
+                    .ToArray();
+
+                if (validCandidates.Length > 0)
+                {
+                    result.Candidates.AddRange(validCandidates);
+                    failure = new FormResolutionFailure();
+                    return result;
+                }
+
+                var invalid = formIdCandidates.First();
+                bareFormFailure = new FormResolutionFailure
+                {
+                    Kind = FormResolutionFailureKind.InvalidKeyword,
+                    Raw = raw,
+                    HasFormKey = true,
+                    FormKey = invalid.FormKey,
+                    HasNumericFormId = true,
+                    NumericFormId = bareFormId,
+                    ActualKind = invalid.Kind
+                };
+            }
+            else
+            {
+                bareFormFailure = new FormResolutionFailure
+                {
+                    Kind = FormResolutionFailureKind.UnknownFormId,
+                    Raw = raw,
+                    HasNumericFormId = true,
+                    NumericFormId = bareFormId
+                };
+            }
+        }
+
         if (LooksLikePluginName(token))
         {
             if (_knownPlugins.Contains(token))
@@ -319,7 +462,7 @@ internal sealed class RecordIndex
             return result;
         }
 
-        failure = new FormResolutionFailure
+        failure = bareFormFailure ?? new FormResolutionFailure
         {
             Kind = FormResolutionFailureKind.UnknownEditorId,
             Raw = raw
@@ -385,6 +528,20 @@ internal sealed class RecordIndex
         return true;
     }
 
+    internal static bool TryParseBareFormId(string raw, out uint formId)
+    {
+        formId = default;
+        var token = raw.Trim();
+        if (!token.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) return false;
+
+        var idPart = token[2..];
+        if (idPart.Length == 0 || idPart.Length > 8) return false;
+        if (!uint.TryParse(idPart, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var parsed)) return false;
+
+        formId = parsed;
+        return true;
+    }
+
     internal static bool TryParseFormKey(string raw, out FormKey formKey)
     {
         formKey = default;
@@ -421,6 +578,8 @@ internal sealed class RecordIndex
         formKey = new FormKey(modKey, localId);
         return true;
     }
+
+    private readonly record struct RuntimeFormIdMapping(uint Prefix, uint LocalIdMask);
 
     private static bool LooksLikePluginName(string token)
     {

@@ -421,8 +421,11 @@ internal sealed class SPIDthesisDistributor
         string raw = failure.Raw.Trim();
         switch (failure.Kind)
         {
-            case FormResolutionFailureKind.UnknownFormId:
+            case FormResolutionFailureKind.UnknownFormId when failure.HasFormKey:
                 Warn($"\t[{path}] [0x{failure.FormKey.ID:X}] ({failure.FormKey.ModKey.FileName.String}) FAIL - formID doesn't exist");
+                break;
+            case FormResolutionFailureKind.UnknownFormId when failure.HasNumericFormId:
+                Warn($"\t[{path}] [0x{failure.NumericFormId:X}] FAIL - formID doesn't exist");
                 break;
             case FormResolutionFailureKind.InvalidKeyword:
                 Warn($"\t[{path}] [0x{failure.FormKey.ID:X}] ({failure.FormKey.ModKey.FileName.String}) FAIL - keyword does not have a valid editorID");
@@ -454,8 +457,11 @@ internal sealed class SPIDthesisDistributor
         string raw = failure.Raw.Trim();
         switch (failure.Kind)
         {
-            case FormResolutionFailureKind.UnknownFormId:
+            case FormResolutionFailureKind.UnknownFormId when failure.HasFormKey:
                 Warn($"\t\t[{path}] Filter [0x{failure.FormKey.ID:X}] ({failure.FormKey.ModKey.FileName.String}) SKIP - formID doesn't exist");
+                break;
+            case FormResolutionFailureKind.UnknownFormId when failure.HasNumericFormId:
+                Warn($"\t\t[{path}] Filter [0x{failure.NumericFormId:X}] SKIP - formID doesn't exist");
                 break;
             case FormResolutionFailureKind.UnknownPlugin:
                 Warn($"\t\t[{path}] Filter ({failure.PluginName ?? raw}) SKIP - mod cannot be found");

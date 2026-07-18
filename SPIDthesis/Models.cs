@@ -56,6 +56,8 @@ internal sealed class FormResolutionFailure
     public string Raw { get; init; } = string.Empty;
     public bool HasFormKey { get; init; }
     public FormKey FormKey { get; init; }
+    public bool HasNumericFormId { get; init; }
+    public uint NumericFormId { get; init; }
     public string? PluginName { get; init; }
     public IndexedFormKind ExpectedKind { get; init; }
     public IndexedFormKind ActualKind { get; init; }
