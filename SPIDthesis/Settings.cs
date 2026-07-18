@@ -21,11 +21,11 @@ public record Settings
     public List<string> IncludedIniFiles { get; set; } = new();
 
     [SettingName("Use chance distributions")]
-    [Tooltip("Enabled by default. When enabled, lines with a chance below 100 use their configured rolls. When disabled, those lines are skipped entirely. Chance 100 lines always distribute.")]
+    [Tooltip("Enabled by default. When enabled, lines with a chance condition use their configured rolls. When disabled, those lines are skipped entirely.")]
     public bool UseChanceDistribution { get; set; } = true;
 
     [SettingName("Extra chance logging")]
-    [Tooltip("Disabled by default. After the normal run output, list every parsed INI line with a chance below 100 and the source plugin of its distributed form. Chance 100 lines are not listed.")]
+    [Tooltip("Disabled by default. After the normal run output, list every parsed INI line with a chance condition and the source plugin of its distributed form.")]
     public bool ExtraChanceLogging { get; set; } = false;
 
     [SettingName("Distribute keywords")]
@@ -41,27 +41,21 @@ public record Settings
     public bool EnableShouts { get; set; } = true;
 
     [SettingName("Distribute packages")]
-    [Tooltip("Adds Package lines to NPC AI package lists. A FormList value sets one of SPID's five package-list slots using the sixth INI field as the slot index.")]
     public bool EnablePackages { get; set; } = true;
 
     [SettingName("Distribute factions")]
-    [Tooltip("Adds matching Faction lines at rank 1.")]
     public bool EnableFactions { get; set; } = true;
 
     [SettingName("Distribute items")]
-    [Tooltip("Adds Item lines to matching NPC inventories. Item count ranges are selected independently for each patch run.")]
     public bool EnableItems { get; set; } = true;
 
     [SettingName("Distribute outfits")]
-    [Tooltip("Assigns the first matching Outfit or FinalOutfit line to each NPC's default outfit.")]
     public bool EnableOutfits { get; set; } = true;
 
     [SettingName("Distribute sleep outfits")]
-    [Tooltip("Assigns the first matching SleepOutfit line to each NPC's sleeping outfit.")]
     public bool EnableSleepOutfits { get; set; } = true;
 
     [SettingName("Distribute skins")]
-    [Tooltip("Assigns the first matching Skin line to each NPC's Worn Armor (skin) field.")]
     public bool EnableSkins { get; set; } = true;
 
     [SettingName("Ignored INI file names")]

@@ -1,12 +1,18 @@
 using System.Reflection;
 using Mutagen.Bethesda.Plugins;
 using Mutagen.Bethesda.Skyrim;
+using Mutagen.Bethesda.Synthesis;
 
 namespace SPIDthesis;
 
 internal sealed class NpcEvaluationState
 {
+    private static readonly FormKey FoxRaceFormKey = FormKey.Factory("109C7C:Skyrim.esm");
+
+    private readonly IPatcherState<ISkyrimMod, ISkyrimModGetter> _state;
     private readonly RecordIndex _index;
+    private bool _templateRaceResolved;
+    private bool _raceDataBuilt;
 
     public INpcGetter Source { get; }
     public HashSet<string> StringCandidates { get; } = new(StringComparer.OrdinalIgnoreCase);
@@ -22,6 +28,8 @@ internal sealed class NpcEvaluationState
     public FormKey DefaultOutfit { get; private set; }
     public FormKey SleepingOutfit { get; private set; }
     public FormKey Skin { get; private set; }
+    public FormKey EffectiveRace { get; private set; }
+    public bool IsFoxTemplatePlaceholder { get; private set; }
     private readonly FormKey[] _packageLists = new FormKey[5];
 
     public int ActorLevel { get; private set; }
@@ -31,15 +39,22 @@ internal sealed class NpcEvaluationState
     public bool Child { get; private set; }
     public bool Leveled => false;
 
-    private NpcEvaluationState(RecordIndex index, INpcGetter source)
+    private NpcEvaluationState(
+        IPatcherState<ISkyrimMod, ISkyrimModGetter> state,
+        RecordIndex index,
+        INpcGetter source)
     {
+        _state = state;
         _index = index;
         Source = source;
     }
 
-    public static NpcEvaluationState Create(RecordIndex index, INpcGetter source)
+    public static NpcEvaluationState Create(
+        IPatcherState<ISkyrimMod, ISkyrimModGetter> state,
+        RecordIndex index,
+        INpcGetter source)
     {
-        var result = new NpcEvaluationState(index, source);
+        var result = new NpcEvaluationState(state, index, source);
         result.Build();
         return result;
     }
@@ -47,7 +62,150 @@ internal sealed class NpcEvaluationState
     private void Build()
     {
         BuildDirectLists();
+        BuildFoxTemplateState();
         BuildStaticFields();
+        if (!IsFoxTemplatePlaceholder) BuildRaceData();
+    }
+
+    private void BuildFoxTemplateState()
+    {
+        EffectiveRace = Source.Race.FormKey;
+        IsFoxTemplatePlaceholder = IsFoxRace(EffectiveRace) && !Source.Template.IsNull;
+    }
+
+    public void PrepareForMatching(ResolvedRule rule)
+    {
+        if (!IsFoxTemplatePlaceholder || _raceDataBuilt || !RequiresEffectiveRace(rule)) return;
+        ResolveFoxTemplateRace();
+    }
+
+    private static bool RequiresEffectiveRace(ResolvedRule rule)
+    {
+        if (!rule.Source.StringFilters.IsEmpty || rule.Source.Traits.Child is not null) return true;
+        return HasRaceSensitiveFilter(rule.FormFilters.Match) ||
+               HasRaceSensitiveFilter(rule.FormFilters.All) ||
+               HasRaceSensitiveFilter(rule.FormFilters.Not);
+    }
+
+    private static bool HasRaceSensitiveFilter(IEnumerable<ResolvedFormFilter> filters)
+    {
+        return filters.Any(filter => filter.Candidates.Any(candidate =>
+            candidate.Kind is IndexedFormKind.Race or IndexedFormKind.FormList));
+    }
+
+    private void ResolveFoxTemplateRace()
+    {
+        if (_templateRaceResolved) return;
+        _templateRaceResolved = true;
+        var resolvedRace = FindFirstNonFoxTemplateRace(
+            Source,
+            new HashSet<FormKey>(),
+            new HashSet<FormKey>());
+        if (!resolvedRace.IsNull) EffectiveRace = resolvedRace;
+        BuildRaceData();
+    }
+
+    private FormKey FindFirstNonFoxTemplateRace(
+        INpcGetter npc,
+        HashSet<FormKey> visitedNpcs,
+        HashSet<FormKey> visitedLeveledNpcs)
+    {
+        if (!visitedNpcs.Add(npc.FormKey) || npc.Template.IsNull) return default;
+
+        try
+        {
+            return FindFirstNonFoxRace(
+                npc.Template.TryResolve(_state.LinkCache),
+                visitedNpcs,
+                visitedLeveledNpcs);
+        }
+        catch
+        {
+            return default;
+        }
+    }
+
+    private FormKey FindFirstNonFoxRace(
+        INpcSpawnGetter? spawn,
+        HashSet<FormKey> visitedNpcs,
+        HashSet<FormKey> visitedLeveledNpcs)
+    {
+        switch (spawn)
+        {
+            case INpcGetter npc:
+                if (!visitedNpcs.Add(npc.FormKey)) return default;
+                var race = npc.Race.FormKey;
+                if (!race.IsNull && !IsFoxRace(race)) return race;
+                if (npc.Template.IsNull) return default;
+                try
+                {
+                    return FindFirstNonFoxRace(
+                        npc.Template.TryResolve(_state.LinkCache),
+                        visitedNpcs,
+                        visitedLeveledNpcs);
+                }
+                catch
+                {
+                    return default;
+                }
+
+            case ILeveledNpcGetter leveledNpc:
+                if (!visitedLeveledNpcs.Add(leveledNpc.FormKey)) return default;
+                foreach (var entry in leveledNpc.Entries ?? Array.Empty<ILeveledNpcEntryGetter>())
+                {
+                    var reference = entry.Data?.Reference;
+                    if (reference is null || reference.IsNull) continue;
+                    try
+                    {
+                        var found = FindFirstNonFoxRace(
+                            reference.TryResolve(_state.LinkCache),
+                            visitedNpcs,
+                            visitedLeveledNpcs);
+                        if (!found.IsNull) return found;
+                    }
+                    catch
+                    {
+                    }
+                }
+                break;
+        }
+
+        return default;
+    }
+
+    private bool IsFoxRace(FormKey race)
+    {
+        return race == FoxRaceFormKey ||
+               string.Equals(_index.GetEditorId(race), "FoxRace", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public bool CanDistribute(ResolvedRule rule)
+    {
+        if (!IsFoxTemplatePlaceholder) return true;
+
+        return rule.Source.Kind switch
+        {
+            DistributionKind.Keyword => !HasTemplateFlag("Keywords"),
+            DistributionKind.Spell => !HasTemplateFlag("SpellList"),
+            DistributionKind.Perk => !HasTemplateFlag("SpellList"),
+            DistributionKind.Shout => !HasTemplateFlag("SpellList"),
+            DistributionKind.Faction => !HasTemplateFlag("Factions"),
+            DistributionKind.Package when rule.DistributedKind == IndexedFormKind.FormList &&
+                                          rule.Source.PackageIndex == 0 =>
+                !HasTemplateFlag("DefaultPackageList", "DefaultPackList", "DefPackList", "AIPackages", "AiPackages", "Packages"),
+            DistributionKind.Package => !HasTemplateFlag("AIPackages", "AiPackages", "Packages"),
+            DistributionKind.Item => !HasTemplateFlag("Inventory"),
+            DistributionKind.Outfit => !HasTemplateFlag("Inventory"),
+            DistributionKind.SleepOutfit => !HasTemplateFlag("Inventory"),
+            DistributionKind.Skin => !HasTemplateFlag("Traits"),
+            _ => true
+        };
+    }
+
+    private bool HasTemplateFlag(params string[] names)
+    {
+        return names.Any(name =>
+            EnumFlagHelpers.HasNamedFlag(Source.Configuration.TemplateFlags, name));
     }
 
     private void BuildDirectLists()
@@ -115,7 +273,6 @@ internal sealed class NpcEvaluationState
         AddString(Source.EditorID);
         AddString(Source.Name?.String);
 
-        AddLink(Source.Race.FormKey);
         AddLink(Source.Class.FormKey);
         AddLink(Source.CombatStyle.FormKey);
         AddLink(Source.Voice.FormKey);
@@ -139,15 +296,18 @@ internal sealed class NpcEvaluationState
         AddLink(DefaultOutfit);
         AddLink(SleepingOutfit);
         AddLink(Skin);
+    }
 
-        var raceKey = Source.Race.FormKey;
-        if (!raceKey.IsNull && _index.Races.TryGetValue(raceKey, out var race))
+    private void BuildRaceData()
+    {
+        if (_raceDataBuilt) return;
+        _raceDataBuilt = true;
+        AddLink(EffectiveRace);
+        if (EffectiveRace.IsNull || !_index.Races.TryGetValue(EffectiveRace, out var race)) return;
+        Child = EnumFlagHelpers.HasNamedFlag(race.Flags, "Child");
+        foreach (var keyword in race.Keywords ?? Array.Empty<Mutagen.Bethesda.Plugins.IFormLinkGetter<IKeywordGetter>>())
         {
-            Child = EnumFlagHelpers.HasNamedFlag(race.Flags, "Child");
-            foreach (var keyword in race.Keywords ?? Array.Empty<Mutagen.Bethesda.Plugins.IFormLinkGetter<IKeywordGetter>>())
-            {
-                AddString(_index.GetEditorId(keyword.FormKey));
-            }
+            AddString(_index.GetEditorId(keyword.FormKey));
         }
     }
 

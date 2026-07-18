@@ -71,7 +71,7 @@ internal sealed class SPIDthesisDistributor
                 if (npc.FormKey == PlayerFormKey) continue;
                 _npcsScanned++;
 
-                var evaluation = NpcEvaluationState.Create(index, npc);
+                var evaluation = NpcEvaluationState.Create(_state, index, npc);
                 bool changed = false;
                 bool outfitRuleSettled = false;
                 bool sleepOutfitRuleSettled = false;
@@ -83,6 +83,7 @@ internal sealed class SPIDthesisDistributor
                     if (rule.Source.Kind == DistributionKind.Outfit && outfitRuleSettled) continue;
                     if (rule.Source.Kind == DistributionKind.SleepOutfit && sleepOutfitRuleSettled) continue;
                     if (rule.Source.Kind == DistributionKind.Skin && skinRuleSettled) continue;
+                    if (!evaluation.CanDistribute(rule)) continue;
                     if (!RuleMatcher.Matches(rule, evaluation, _runSeed)) continue;
 
                     if (rule.Source.Kind == DistributionKind.Outfit) outfitRuleSettled = true;

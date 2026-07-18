@@ -7,11 +7,17 @@ internal static class RuleMatcher
 {
     public static bool Matches(ResolvedRule rule, NpcEvaluationState npc, int runSeed)
     {
+        if (!MatchesLevel(rule.Source.LevelFilters, npc) ||
+            !MatchesNonRaceTraits(rule.Source.Traits, npc) ||
+            !PassesChance(rule.Source, npc.Source.FormKey.ToString(), runSeed))
+        {
+            return false;
+        }
+
+        npc.PrepareForMatching(rule);
         return MatchesStrings(rule.Source.StringFilters, npc.StringCandidates) &&
                MatchesForms(rule.FormFilters, npc) &&
-               MatchesLevel(rule.Source.LevelFilters, npc) &&
-               MatchesTraits(rule.Source.Traits, npc) &&
-               PassesChance(rule.Source, npc.Source.FormKey.ToString(), runSeed);
+               MatchesChildTrait(rule.Source.Traits, npc);
     }
 
     public static int SelectItemCount(SpidRule rule, string npcFormKey, int randomSeed)
@@ -61,18 +67,20 @@ internal static class RuleMatcher
         return true;
     }
 
-    private static bool MatchesTraits(TraitFilter traits, NpcEvaluationState npc)
+    private static bool MatchesNonRaceTraits(TraitFilter traits, NpcEvaluationState npc)
     {
         if (traits.Female is not null && traits.Female.Value != npc.Female) return false;
         if (traits.Unique is not null && traits.Unique.Value != npc.Unique) return false;
         if (traits.Summonable is not null && traits.Summonable.Value != npc.Summonable) return false;
-        if (traits.Child is not null && traits.Child.Value != npc.Child) return false;
         if (traits.Leveled is not null && traits.Leveled.Value != npc.Leveled) return false;
-
         if (traits.Teammate == true) return false;
         if (traits.StartsDead == true) return false;
-
         return true;
+    }
+
+    private static bool MatchesChildTrait(TraitFilter traits, NpcEvaluationState npc)
+    {
+        return traits.Child is null || traits.Child.Value == npc.Child;
     }
 
     private static bool PassesChance(SpidRule rule, string npcFormKey, int randomSeed)
