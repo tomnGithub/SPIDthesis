@@ -91,6 +91,7 @@ internal static class SpidIniParser
                         warn("\t\t\tFinal modifier can only be applied to Outfits.");
                     }
 
+                    var chance = ParseChance(pieces[6], path, lineNumber, warn);
                     var rule = new SpidRule
                     {
                         Kind = kind,
@@ -101,8 +102,8 @@ internal static class SpidIniParser
                         Traits = ParseTraits(pieces[4]),
                         Count = ParseCount(kind, pieces[5], path, lineNumber, warn),
                         PackageIndex = ParsePackageIndex(kind, pieces[5], path, lineNumber, warn),
-                        Chance = ParseChance(pieces[6], path, lineNumber, warn),
-                        HasChanceCondition = !string.IsNullOrWhiteSpace(pieces[6]),
+                        Chance = chance,
+                        HasChanceCondition = chance.Percent < 100.0,
                         SourcePath = path,
                         LineNumber = lineNumber,
                         RawLine = originalLine,

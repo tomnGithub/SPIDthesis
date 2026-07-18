@@ -1,8 +1,8 @@
 {
   "Nickname": "SPIDthesis",
   "Visibility": "Visible",
-  "OneLineDescription": "Statically distributes supported SPID rules directly to winning NPC records.",
-  "LongDescription": "Reads selected *_DISTR.ini files from the Data root and optional SPIDthesisConverted folder, then applies direct-record Keyword, Faction, Perk, Spell, Shout, Package, SleepOutfit, Outfit, Item, and Skin distributions through Synthesis. Includes missing bare-EditorID keyword creation, package and package-list handling, a single chance-distribution toggle that either rolls explicit chance rules or skips them entirely, optional chance-line reporting, fresh per-run normal chance and item-count rolls, first-match outfit/sleep-outfit/skin assignment, ordered keyword chaining, optional INI filename allowlisting, optional post-run INI archiving, and Synthesis 0.36+ master-overflow split output compatibility. NPC templates and inherited data are intentionally ignored.",
+  "OneLineDescription": "Converts SPID inis into esps. Made by MadAborModding.",
+  "LongDescription": "Converts SPID inis into esps. Made by MadAborModding.",
   "PreferredAutoVersioning": "Default",
   "RequiredMods": [],
   "TargetedReleases": [
