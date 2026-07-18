@@ -38,6 +38,29 @@ internal enum IndexedFormKind
 
 internal sealed record IndexedForm(FormKey FormKey, string? EditorId, IndexedFormKind Kind);
 
+internal enum FormResolutionFailureKind
+{
+    None,
+    UnknownFormId,
+    UnknownPlugin,
+    UnknownEditorId,
+    MismatchingFormType,
+    InvalidKeyword,
+    MalformedEditorId,
+    KeywordCreationFailed
+}
+
+internal sealed class FormResolutionFailure
+{
+    public FormResolutionFailureKind Kind { get; init; }
+    public string Raw { get; init; } = string.Empty;
+    public bool HasFormKey { get; init; }
+    public FormKey FormKey { get; init; }
+    public string? PluginName { get; init; }
+    public IndexedFormKind ExpectedKind { get; init; }
+    public IndexedFormKind ActualKind { get; init; }
+}
+
 internal sealed class TextFilterSet
 {
     public List<string> Match { get; } = new();
@@ -101,6 +124,7 @@ internal sealed class SpidRule
     public IntRange Count { get; init; } = new(1, 1);
     public int PackageIndex { get; init; }
     public ChanceFilter Chance { get; init; } = ChanceFilter.Always;
+    public bool HasChanceCondition { get; init; }
     public string SourcePath { get; init; } = string.Empty;
     public int LineNumber { get; init; }
     public string RawLine { get; init; } = string.Empty;

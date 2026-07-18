@@ -9,6 +9,7 @@ internal sealed class RecordIndex
 {
     private readonly Dictionary<string, List<IndexedForm>> _byEditorId = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<FormKey, IndexedForm> _byFormKey = new();
+    private readonly HashSet<string> _knownPlugins = new(StringComparer.OrdinalIgnoreCase);
 
     public Dictionary<FormKey, IKeywordGetter> Keywords { get; } = new();
     public Dictionary<FormKey, ISpellGetter> Spells { get; } = new();
@@ -129,6 +130,7 @@ internal sealed class RecordIndex
     {
         var indexed = new IndexedForm(formKey, editorId, kind);
         _byFormKey[formKey] = indexed;
+        _knownPlugins.Add(formKey.ModKey.FileName.String);
 
         if (string.IsNullOrWhiteSpace(editorId)) return;
         if (!_byEditorId.TryGetValue(editorId, out var values))
@@ -139,61 +141,189 @@ internal sealed class RecordIndex
         values.Add(indexed);
     }
 
-    public bool TryResolveDistributedForm(DistributionKind kind, string raw, out FormKey formKey)
+    public bool TryResolveDistributedForm(
+        DistributionKind kind,
+        string raw,
+        out FormKey formKey,
+        out FormResolutionFailure failure)
     {
-        if (TryParseFormKey(raw, out var parsed) && IsCorrectDistributedType(kind, parsed))
+        var token = raw.Trim();
+        if (token.Length == 0)
         {
-            formKey = parsed;
-            return true;
+            formKey = default;
+            failure = new FormResolutionFailure
+            {
+                Kind = FormResolutionFailureKind.MalformedEditorId,
+                Raw = raw,
+                ExpectedKind = GetExpectedKind(kind)
+            };
+            return false;
         }
 
-        if (_byEditorId.TryGetValue(raw.Trim(), out var candidates))
+        if (TryParseFormKey(token, out var parsed))
+        {
+            if (!_byFormKey.TryGetValue(parsed, out var indexed))
+            {
+                formKey = default;
+                failure = new FormResolutionFailure
+                {
+                    Kind = FormResolutionFailureKind.UnknownFormId,
+                    Raw = raw,
+                    HasFormKey = true,
+                    FormKey = parsed,
+                    ExpectedKind = GetExpectedKind(kind)
+                };
+                return false;
+            }
+
+            if (kind == DistributionKind.Keyword && string.IsNullOrWhiteSpace(indexed.EditorId))
+            {
+                formKey = default;
+                failure = new FormResolutionFailure
+                {
+                    Kind = FormResolutionFailureKind.InvalidKeyword,
+                    Raw = raw,
+                    HasFormKey = true,
+                    FormKey = parsed,
+                    ExpectedKind = IndexedFormKind.Keyword,
+                    ActualKind = indexed.Kind
+                };
+                return false;
+            }
+
+            if (IsCorrectDistributedType(kind, parsed))
+            {
+                formKey = parsed;
+                failure = new FormResolutionFailure();
+                return true;
+            }
+
+            formKey = default;
+            failure = new FormResolutionFailure
+            {
+                Kind = FormResolutionFailureKind.MismatchingFormType,
+                Raw = raw,
+                HasFormKey = true,
+                FormKey = parsed,
+                ExpectedKind = GetExpectedKind(kind),
+                ActualKind = indexed.Kind
+            };
+            return false;
+        }
+
+        if (_byEditorId.TryGetValue(token, out var candidates))
         {
             var candidate = candidates.FirstOrDefault(x => IsCorrectDistributedType(kind, x.FormKey));
             if (candidate is not null)
             {
                 formKey = candidate.FormKey;
+                failure = new FormResolutionFailure();
                 return true;
             }
+
+            var actual = candidates.First();
+            formKey = default;
+            failure = new FormResolutionFailure
+            {
+                Kind = FormResolutionFailureKind.MismatchingFormType,
+                Raw = raw,
+                ExpectedKind = GetExpectedKind(kind),
+                ActualKind = actual.Kind
+            };
+            return false;
         }
 
         formKey = default;
+        failure = new FormResolutionFailure
+        {
+            Kind = FormResolutionFailureKind.UnknownEditorId,
+            Raw = raw,
+            ExpectedKind = GetExpectedKind(kind)
+        };
         return false;
     }
 
-    public ResolvedFormFilter ResolveFilter(string raw)
+    public ResolvedFormFilter ResolveFilter(string raw, out FormResolutionFailure failure)
     {
         var token = raw.Trim();
         var result = new ResolvedFormFilter { Raw = raw };
+
+        if (token.Length == 0)
+        {
+            failure = new FormResolutionFailure
+            {
+                Kind = FormResolutionFailureKind.MalformedEditorId,
+                Raw = raw
+            };
+            return result;
+        }
 
         if (TryParseFormKey(token, out var formKey))
         {
             if (_byFormKey.TryGetValue(formKey, out var indexed))
             {
+                if (indexed.Kind == IndexedFormKind.Keyword && string.IsNullOrWhiteSpace(indexed.EditorId))
+                {
+                    failure = new FormResolutionFailure
+                    {
+                        Kind = FormResolutionFailureKind.InvalidKeyword,
+                        Raw = raw,
+                        HasFormKey = true,
+                        FormKey = formKey,
+                        ActualKind = indexed.Kind
+                    };
+                    return result;
+                }
+
                 result.Candidates.Add(indexed);
+                failure = new FormResolutionFailure();
+                return result;
             }
-            else
+
+            failure = new FormResolutionFailure
             {
-                result.Candidates.Add(new IndexedForm(formKey, null, IndexedFormKind.Unknown));
-            }
+                Kind = FormResolutionFailureKind.UnknownFormId,
+                Raw = raw,
+                HasFormKey = true,
+                FormKey = formKey
+            };
             return result;
         }
 
         if (LooksLikePluginName(token))
         {
-            return new ResolvedFormFilter
+            if (_knownPlugins.Contains(token))
             {
+                failure = new FormResolutionFailure();
+                return new ResolvedFormFilter
+                {
+                    Raw = raw,
+                    IsPlugin = true,
+                    PluginName = token
+                };
+            }
+
+            failure = new FormResolutionFailure
+            {
+                Kind = FormResolutionFailureKind.UnknownPlugin,
                 Raw = raw,
-                IsPlugin = true,
                 PluginName = token
             };
+            return result;
         }
 
         if (_byEditorId.TryGetValue(token, out var candidates))
         {
             result.Candidates.AddRange(candidates);
+            failure = new FormResolutionFailure();
+            return result;
         }
 
+        failure = new FormResolutionFailure
+        {
+            Kind = FormResolutionFailureKind.UnknownEditorId,
+            Raw = raw
+        };
         return result;
     }
 
@@ -205,6 +335,24 @@ internal sealed class RecordIndex
     public IndexedFormKind GetKind(FormKey formKey)
     {
         return _byFormKey.TryGetValue(formKey, out var value) ? value.Kind : IndexedFormKind.Unknown;
+    }
+
+    private static IndexedFormKind GetExpectedKind(DistributionKind kind)
+    {
+        return kind switch
+        {
+            DistributionKind.Keyword => IndexedFormKind.Keyword,
+            DistributionKind.Spell => IndexedFormKind.Spell,
+            DistributionKind.Perk => IndexedFormKind.Perk,
+            DistributionKind.Shout => IndexedFormKind.Shout,
+            DistributionKind.Package => IndexedFormKind.Package,
+            DistributionKind.Item => IndexedFormKind.Item,
+            DistributionKind.Outfit => IndexedFormKind.Outfit,
+            DistributionKind.SleepOutfit => IndexedFormKind.Outfit,
+            DistributionKind.Faction => IndexedFormKind.Faction,
+            DistributionKind.Skin => IndexedFormKind.Armor,
+            _ => IndexedFormKind.Unknown
+        };
     }
 
     private bool IsCorrectDistributedType(DistributionKind kind, FormKey key)

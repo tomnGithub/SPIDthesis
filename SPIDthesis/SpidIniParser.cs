@@ -64,9 +64,10 @@ internal static class SpidIniParser
                     continue;
                 }
 
+                var sanitized = rawValue;
                 try
                 {
-                    var sanitized = Sanitize(rawValue);
+                    sanitized = Sanitize(rawValue);
                     var pieces = sanitized.Split('|');
                     if (pieces.Length > 7)
                     {
@@ -86,7 +87,7 @@ internal static class SpidIniParser
 
                     if (hadFinal && kind != DistributionKind.Outfit)
                     {
-                        warn($"\t\t[{rawKey} = {rawValue}]");
+                        warn($"\t\t[{rawKey} = {sanitized}]");
                         warn("\t\t\tFinal modifier can only be applied to Outfits.");
                     }
 
@@ -101,6 +102,7 @@ internal static class SpidIniParser
                         Count = ParseCount(kind, pieces[5], path, lineNumber, warn),
                         PackageIndex = ParsePackageIndex(kind, pieces[5], path, lineNumber, warn),
                         Chance = ParseChance(pieces[6], path, lineNumber, warn),
+                        HasChanceCondition = !string.IsNullOrWhiteSpace(pieces[6]),
                         SourcePath = path,
                         LineNumber = lineNumber,
                         RawLine = originalLine,
@@ -112,7 +114,7 @@ internal static class SpidIniParser
                 }
                 catch (Exception ex)
                 {
-                    warn($"\t\tFailed to parse entry [{rawKey} = {rawValue}]: {ex.Message}");
+                    warn($"\t\tFailed to parse entry [{rawKey} = {sanitized}]: {ex.Message}");
                 }
             }
 
@@ -285,8 +287,7 @@ internal static class SpidIniParser
                 }
                 else
                 {
-                    warn($"{Path.GetFileName(path)}:{lineNumber}: could not parse skill filter '{token}'. The rule will fail closed for skill matching.");
-                    result.Skills.Add(new SkillRange(-1, new IntRange(0, 0), false));
+                    throw new FormatException($"could not parse skill filter '{token}'");
                 }
 
                 continue;
@@ -298,7 +299,7 @@ internal static class SpidIniParser
             }
             else
             {
-                warn($"{Path.GetFileName(path)}:{lineNumber}: could not parse actor level filter '{token}'.");
+                throw new FormatException($"could not parse actor level filter '{token}'");
             }
         }
 
@@ -376,8 +377,7 @@ internal static class SpidIniParser
             return count;
         }
 
-        warn($"{Path.GetFileName(path)}:{lineNumber}: invalid item count '{value}'. Using 1.");
-        return new IntRange(1, 1);
+        throw new FormatException($"invalid item count '{value}'");
     }
 
     private static int ParsePackageIndex(
@@ -397,8 +397,7 @@ internal static class SpidIniParser
             return index;
         }
 
-        warn($"{Path.GetFileName(path)}:{lineNumber}: invalid package index '{value}'. Using 0.");
-        return 0;
+        throw new FormatException($"invalid package index '{value}'");
     }
 
     private static ChanceFilter ParseChance(string value, string path, int lineNumber, Action<string> warn)
@@ -412,8 +411,7 @@ internal static class SpidIniParser
         var numeric = deterministic ? value[..^1] : value;
         if (!double.TryParse(numeric, NumberStyles.Float, CultureInfo.InvariantCulture, out var percent))
         {
-            warn($"{Path.GetFileName(path)}:{lineNumber}: invalid chance '{value}'. Using 100%.");
-            return ChanceFilter.Always;
+            throw new FormatException($"invalid chance '{value}'");
         }
 
         return new ChanceFilter(Math.Clamp(percent, 0.0, 100.0), deterministic);
