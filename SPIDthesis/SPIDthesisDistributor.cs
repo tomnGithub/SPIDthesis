@@ -343,6 +343,16 @@ internal sealed class SPIDthesisDistributor
             ResolveFilterGroup(rule.FormFilters.All, formFilters.All, index, rule);
             ResolveFilterGroup(rule.FormFilters.Not, formFilters.Not, index, rule);
 
+            // A bad entry should not poison the other forms on the same line. Ignore
+            // unresolved filters, but do not let an entirely invalid positive filter
+            // group disappear and accidentally turn the rule into a broader match.
+            if ((rule.FormFilters.Match.Count > 0 && formFilters.Match.Count == 0) ||
+                (rule.FormFilters.All.Count > 0 && formFilters.All.Count == 0))
+            {
+                Warn($"\t\t[{ToSpidRulePath(rule.SourcePath)}] SKIP - no valid positive form filters remain");
+                continue;
+            }
+
             yield return new ResolvedRule
             {
                 Source = rule,
@@ -411,7 +421,13 @@ internal sealed class SPIDthesisDistributor
             {
                 LogFilterFailure(rule, failure);
             }
-            destination.Add(resolved);
+
+            // Invalid filters are skipped individually. Valid filters from the same
+            // comma-separated or '+' group continue to participate in the rule.
+            if (resolved.IsResolved)
+            {
+                destination.Add(resolved);
+            }
         }
     }
 
