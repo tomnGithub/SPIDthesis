@@ -5,11 +5,10 @@ namespace SPIDthesis;
 
 internal static class RuleMatcher
 {
-    public static bool Matches(ResolvedRule rule, NpcEvaluationState npc, int runSeed)
+    public static bool Matches(ResolvedRule rule, NpcEvaluationState npc)
     {
         if (!MatchesLevel(rule.Source.LevelFilters, npc) ||
-            !MatchesNonRaceTraits(rule.Source.Traits, npc) ||
-            !PassesChance(rule.Source, npc.Source.FormKey.ToString(), runSeed))
+            !MatchesNonRaceTraits(rule.Source.Traits, npc))
         {
             return false;
         }
@@ -83,16 +82,5 @@ internal static class RuleMatcher
         return traits.Child is null || traits.Child.Value == npc.Child;
     }
 
-    private static bool PassesChance(SpidRule rule, string npcFormKey, int randomSeed)
-    {
-        if (rule.Chance.Percent >= 100.0) return true;
-        if (rule.Chance.Percent <= 0.0) return false;
 
-        string seed = rule.Chance.Deterministic ? string.Empty : randomSeed.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        string identity = $"{seed}|{Path.GetFileName(rule.SourcePath)}|{rule.LineNumber}|{rule.RawLine}|{npcFormKey}";
-        byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(identity));
-        ulong value = BitConverter.ToUInt64(hash, 0);
-        double roll = value / (double)ulong.MaxValue * 100.0;
-        return roll < rule.Chance.Percent;
-    }
 }

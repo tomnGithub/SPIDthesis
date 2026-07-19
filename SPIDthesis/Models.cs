@@ -159,6 +159,7 @@ internal sealed class ResolvedRule
 {
     public SpidRule Source { get; init; } = null!;
     public FormKey DistributedForm { get; init; }
+    public string? DistributedEditorId { get; init; }
     public IndexedFormKind DistributedKind { get; init; }
     public ResolvedFormFilterSet FormFilters { get; init; } = new();
     public int OriginalOrder { get; init; }

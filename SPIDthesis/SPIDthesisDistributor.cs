@@ -3,6 +3,7 @@ using Mutagen.Bethesda;
 using Mutagen.Bethesda.Plugins;
 using Mutagen.Bethesda.Skyrim;
 using Mutagen.Bethesda.Synthesis;
+using Noggog;
 
 namespace SPIDthesis;
 
@@ -18,8 +19,13 @@ internal sealed class SPIDthesisDistributor
     private readonly int _runSeed;
 
     private int _keywordsCreated;
+    private int _leveledItemsCreated;
+    private int _leveledSpellsCreated;
+    private int _chanceRecordsCreated;
     private int _npcsScanned;
     private int _npcsChanged;
+    private readonly Dictionary<SpidRule, FormKey> _chanceSpellLists = new();
+    private readonly Dictionary<(SpidRule Rule, int Count), FormKey> _chanceItemLists = new();
     private readonly Dictionary<(DistributionKind Kind, FormKey Form), HashSet<FormKey>> _distributedNpcCounts = new();
 
     public SPIDthesisDistributor(
@@ -53,8 +59,11 @@ internal sealed class SPIDthesisDistributor
 
         var parseResult = SpidIniParser.ParseFiles(iniFiles, Warn);
         var parsedRules = parseResult.Rules;
+        var skippedChanceRules = parsedRules
+            .Where(IsUnsupportedChanceRule)
+            .ToArray();
         var distributionRules = parsedRules
-            .Where(rule => _settings.UseChanceDistribution || !rule.HasChanceCondition)
+            .Where(rule => !IsUnsupportedChanceRule(rule))
             .ToArray();
 
         SpidLog.Header("LOOKUP");
@@ -84,7 +93,7 @@ internal sealed class SPIDthesisDistributor
                     if (rule.Source.Kind == DistributionKind.SleepOutfit && sleepOutfitRuleSettled) continue;
                     if (rule.Source.Kind == DistributionKind.Skin && skinRuleSettled) continue;
                     if (!evaluation.CanDistribute(rule)) continue;
-                    if (!RuleMatcher.Matches(rule, evaluation, _runSeed)) continue;
+                    if (!RuleMatcher.Matches(rule, evaluation)) continue;
 
                     if (rule.Source.Kind == DistributionKind.Outfit) outfitRuleSettled = true;
                     if (rule.Source.Kind == DistributionKind.SleepOutfit) sleepOutfitRuleSettled = true;
@@ -105,43 +114,39 @@ internal sealed class SPIDthesisDistributor
         }
 
         MoveProcessedIniFiles(parseResult.ProcessedFiles);
-        LogChanceConditions(parsedRules, resolvedRules, index);
+        LogSkippedChanceLines(skippedChanceRules, index);
     }
 
-    private void LogChanceConditions(
-        IReadOnlyCollection<SpidRule> parsedRules,
-        IReadOnlyCollection<ResolvedRule> resolvedRules,
+    private static bool IsUnsupportedChanceRule(SpidRule rule)
+    {
+        return rule.HasChanceCondition &&
+               rule.Kind != DistributionKind.Item &&
+               rule.Kind != DistributionKind.Spell;
+    }
+
+    private void LogSkippedChanceLines(
+        IReadOnlyCollection<SpidRule> skippedRules,
         RecordIndex index)
     {
-        if (!_settings.ExtraChanceLogging) return;
+        if (skippedRules.Count == 0) return;
 
-        var chanceRules = parsedRules
-            .Where(rule => rule.HasChanceCondition)
+        var orderedRules = skippedRules
             .OrderBy(rule => rule.SourcePath, StringComparer.OrdinalIgnoreCase)
             .ThenBy(rule => rule.LineNumber)
             .ToArray();
 
-        SpidLog.Header("CHANCE CONDITIONS");
-        SpidLog.Info($"{chanceRules.Length} chance condition line{(chanceRules.Length == 1 ? string.Empty : "s")} found");
+        SpidLog.Header("SKIPPED CHANCE LINES");
+        SpidLog.Info($"{orderedRules.Length} line{(orderedRules.Length == 1 ? string.Empty : "s")} skipped because sub-100% chance is only supported for Items and Spells");
 
-        var resolvedBySource = resolvedRules.ToDictionary(rule => rule.Source, rule => rule.DistributedForm);
-        foreach (var rule in chanceRules)
+        foreach (var rule in orderedRules)
         {
-            string plugin = ResolveChanceRulePlugin(rule, resolvedBySource, index);
+            string plugin = ResolveSkippedChanceRulePlugin(rule, index);
             SpidLog.Info($"	[{ToSpidDataPath(rule.SourcePath)}:{rule.LineNumber}] [{plugin}] {rule.RawLine.Trim()}");
         }
     }
 
-    private string ResolveChanceRulePlugin(
-        SpidRule rule,
-        IReadOnlyDictionary<SpidRule, FormKey> resolvedBySource,
-        RecordIndex index)
+    private string ResolveSkippedChanceRulePlugin(SpidRule rule, RecordIndex index)
     {
-        if (resolvedBySource.TryGetValue(rule, out var resolved))
-        {
-            return resolved.ModKey.FileName.String;
-        }
-
         if (index.TryResolveDistributedForm(rule.Kind, rule.RawDistributedForm, out var formKey, out _))
         {
             return formKey.ModKey.FileName.String;
@@ -169,6 +174,16 @@ internal sealed class SPIDthesisDistributor
         if (_keywordsCreated > 0)
         {
             SpidLog.Info($"Created {_keywordsCreated} Keywords");
+        }
+
+        if (_leveledItemsCreated > 0)
+        {
+            SpidLog.Info($"Created {_leveledItemsCreated} chance Leveled Item records");
+        }
+
+        if (_leveledSpellsCreated > 0)
+        {
+            SpidLog.Info($"Created {_leveledSpellsCreated} chance Leveled Spell records");
         }
 
         foreach (var kind in Enum.GetValues<DistributionKind>())
@@ -347,6 +362,7 @@ internal sealed class SPIDthesisDistributor
             {
                 Source = rule,
                 DistributedForm = distributedForm,
+                DistributedEditorId = index.GetEditorId(distributedForm),
                 DistributedKind = index.GetKind(distributedForm),
                 FormFilters = formFilters,
                 OriginalOrder = currentOrder
@@ -546,7 +562,7 @@ internal sealed class SPIDthesisDistributor
         return rule.Source.Kind switch
         {
             DistributionKind.Keyword => AddKeyword(rule.DistributedForm, npc),
-            DistributionKind.Spell => AddSpell(rule.DistributedForm, npc),
+            DistributionKind.Spell => AddSpell(rule, npc),
             DistributionKind.Perk => AddPerk(rule.DistributedForm, npc),
             DistributionKind.Shout => AddShout(rule.DistributedForm, npc),
             DistributionKind.Package => AddPackage(rule, npc),
@@ -569,7 +585,28 @@ internal sealed class SPIDthesisDistributor
         return true;
     }
 
-    private bool AddSpell(FormKey spell, NpcEvaluationState npc)
+    private bool AddSpell(ResolvedRule rule, NpcEvaluationState npc)
+    {
+        if (!UsesLeveledChance(rule.Source))
+        {
+            return AddDirectSpell(rule.DistributedForm, npc);
+        }
+
+        FormKey leveledSpell = GetOrCreateChanceLeveledSpell(rule);
+        var modified = _state.PatchMod.Npcs.GetOrAddAsOverride(npc.Source);
+        modified.ActorEffect ??= new();
+        if (modified.ActorEffect.Any(x => x.FormKey == leveledSpell)) return false;
+
+        modified.ActorEffect.Add(new FormLink<ISpellRecordGetter>(leveledSpell));
+
+        // Track the record actually placed on the NPC. The original spell remains
+        // conditional at runtime and must not be treated as guaranteed by later rules.
+        npc.Spells.Add(leveledSpell);
+        npc.RelatedForms.Add(leveledSpell);
+        return true;
+    }
+
+    private bool AddDirectSpell(FormKey spell, NpcEvaluationState npc)
     {
         var modified = _state.PatchMod.Npcs.GetOrAddAsOverride(npc.Source);
         modified.ActorEffect ??= new();
@@ -659,9 +696,41 @@ internal sealed class SPIDthesisDistributor
             _runSeed);
         if (count <= 0) return false;
 
+        if (UsesLeveledChance(rule.Source))
+        {
+            return AddChanceItem(rule, npc, count);
+        }
+
+        return AddDirectItem(rule.DistributedForm, npc, count);
+    }
+
+    private bool AddChanceItem(ResolvedRule rule, NpcEvaluationState npc, int count)
+    {
+        FormKey leveledItem = GetOrCreateChanceLeveledItem(rule, count);
         var modified = _state.PatchMod.Npcs.GetOrAddAsOverride(npc.Source);
         modified.Items ??= new();
-        var existing = modified.Items.FirstOrDefault(x => x.Item.Item.FormKey == rule.DistributedForm);
+        if (modified.Items.Any(x => x.Item.Item.FormKey == leveledItem)) return false;
+
+        modified.Items.Add(new ContainerEntry
+        {
+            Item = new ContainerItem
+            {
+                Item = new FormLink<IItemGetter>(leveledItem),
+                Count = 1
+            }
+        });
+
+        // Track the record actually placed in the inventory. The original item remains
+        // conditional at runtime and must not be treated as guaranteed by later rules.
+        npc.RegisterItem(leveledItem, 1);
+        return true;
+    }
+
+    private bool AddDirectItem(FormKey item, NpcEvaluationState npc, int count)
+    {
+        var modified = _state.PatchMod.Npcs.GetOrAddAsOverride(npc.Source);
+        modified.Items ??= new();
+        var existing = modified.Items.FirstOrDefault(x => x.Item.Item.FormKey == item);
         if (existing is not null)
         {
             existing.Item.Count += count;
@@ -672,14 +741,89 @@ internal sealed class SPIDthesisDistributor
             {
                 Item = new ContainerItem
                 {
-                    Item = new FormLink<IItemGetter>(rule.DistributedForm),
+                    Item = new FormLink<IItemGetter>(item),
                     Count = count
                 }
             });
         }
 
-        npc.RegisterItem(rule.DistributedForm, count);
+        npc.RegisterItem(item, count);
         return true;
+    }
+
+    private FormKey GetOrCreateChanceLeveledItem(ResolvedRule rule, int count)
+    {
+        var cacheKey = (rule.Source, count);
+        if (_chanceItemLists.TryGetValue(cacheKey, out var existing)) return existing;
+
+        int leveledCount = Math.Clamp(count, 1, short.MaxValue);
+        if (leveledCount != count)
+        {
+            Warn($"[{ToSpidDataPath(rule.Source.SourcePath)}:{rule.Source.LineNumber}] " +
+                 $"item count {count} exceeds the LVLI limit and was clamped to {leveledCount}");
+        }
+
+        string editorId = BuildChanceEditorId(rule, "Item", ++_chanceRecordsCreated);
+        var leveledItem = _state.PatchMod.LeveledItems.AddNew(editorId);
+        leveledItem.ChanceNone = CreatePercent(100.0 - rule.Source.Chance.Percent);
+        leveledItem.Entries = new();
+        leveledItem.Entries.Add(new LeveledItemEntry
+        {
+            Data = new LeveledItemEntryData
+            {
+                Level = 1,
+                Reference = new FormLink<IItemGetter>(rule.DistributedForm),
+                Count = (short)leveledCount
+            }
+        });
+
+        _chanceItemLists[cacheKey] = leveledItem.FormKey;
+        _leveledItemsCreated++;
+        return leveledItem.FormKey;
+    }
+
+    private FormKey GetOrCreateChanceLeveledSpell(ResolvedRule rule)
+    {
+        if (_chanceSpellLists.TryGetValue(rule.Source, out var existing)) return existing;
+
+        string editorId = BuildChanceEditorId(rule, "Spell", ++_chanceRecordsCreated);
+        var leveledSpell = _state.PatchMod.LeveledSpells.AddNew(editorId);
+        leveledSpell.ChanceNone = CreatePercent(100.0 - rule.Source.Chance.Percent);
+        leveledSpell.Entries = new();
+        leveledSpell.Entries.Add(new LeveledSpellEntry
+        {
+            Data = new LeveledSpellEntryData
+            {
+                Level = 1,
+                Reference = new FormLink<ISpellRecordGetter>(rule.DistributedForm),
+                Count = 1
+            }
+        });
+
+        _chanceSpellLists[rule.Source] = leveledSpell.FormKey;
+        _leveledSpellsCreated++;
+        return leveledSpell.FormKey;
+    }
+
+    private static bool UsesLeveledChance(SpidRule rule)
+    {
+        return rule.HasChanceCondition &&
+               rule.Kind is DistributionKind.Item or DistributionKind.Spell;
+    }
+
+    private static string BuildChanceEditorId(ResolvedRule rule, string recordType, int sequence)
+    {
+        string originalEditorId = string.IsNullOrWhiteSpace(rule.DistributedEditorId)
+            ? $"Form{rule.DistributedForm.ID:X6}_{rule.DistributedForm.ModKey.Name}"
+            : rule.DistributedEditorId;
+
+        return $"{originalEditorId}_SpithesisChance{recordType}{sequence}";
+    }
+
+    private static Percent CreatePercent(double percentage)
+    {
+        double ratio = Math.Clamp(percentage, 0.0, 100.0) / 100.0;
+        return new Percent(ratio);
     }
 
     private bool AddOutfit(FormKey outfit, NpcEvaluationState npc)

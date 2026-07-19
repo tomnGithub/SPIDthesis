@@ -20,14 +20,6 @@ public record Settings
     [Tooltip("Enter one file name per row, for example ThrowableWeaponsSKSE_NPCs_DISTR.ini. File names are matched case-insensitively in the Data root and, when enabled, Data\\SPIDthesisConverted.")]
     public List<string> IncludedIniFiles { get; set; } = new();
 
-    [SettingName("Use chance distributions")]
-    [Tooltip("Enabled by default. When enabled, lines with a chance condition use their configured rolls. When disabled, those lines are skipped entirely.")]
-    public bool UseChanceDistribution { get; set; } = true;
-
-    [SettingName("Extra chance logging")]
-    [Tooltip("Disabled by default. After the normal run output, list every parsed INI line with a chance condition and the source plugin of its distributed form.")]
-    public bool ExtraChanceLogging { get; set; } = false;
-
     [SettingName("Distribute keywords")]
     public bool EnableKeywords { get; set; } = true;
 
