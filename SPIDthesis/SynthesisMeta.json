@@ -1,8 +1,8 @@
 {
   "Nickname": "SPIDthesis",
   "Visibility": "Visible",
-  "OneLineDescription": "Converts SPID inis into esps. Made by MadAborModding.",
-  "LongDescription": "Converts SPID inis into esps. Made by MadAborModding.",
+  "OneLineDescription": "Converts SPID inis into esps. MadAborModding on Nexus.",
+  "LongDescription": "Converts SPID inis into esps. MadAborModding on Nexus.",
   "PreferredAutoVersioning": "Default",
   "RequiredMods": [],
   "TargetedReleases": [
